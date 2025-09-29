@@ -41,7 +41,8 @@ module.exports = async (req, res) => {
           name, 
           email, 
           address, 
-          phonenumber 
+          phonenumber,
+          profileImage
         } = JSON.parse(body);
 
         // Validate required fields
@@ -67,6 +68,7 @@ module.exports = async (req, res) => {
           email: email,
           address: address || '',
           phonenumber: phonenumber || '',
+          profileImage: profileImage || '',
           updatedAt: Date.now()
         };
 
@@ -80,7 +82,8 @@ module.exports = async (req, res) => {
             name: name,
             email: email,
             address: address,
-            phonenumber: phonenumber
+            phonenumber: phonenumber,
+            profileImage: profileImage || ''
           }
         });
 

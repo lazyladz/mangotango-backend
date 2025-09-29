@@ -58,19 +58,21 @@ module.exports = async (req, res) => {
         const userData = userSnapshot.val();
 
         return res.status(200).json({
-          success: true,
-          message: 'Profile data retrieved successfully',
-          user: {
-            userId: userId,
-            name: userData.name || '',
-            email: userData.email || '',
-            address: userData.address || '',
-            phonenumber: userData.phonenumber || '',
-            language: userData.language || '',
-            age: userData.age || '',
-            role: userData.role || 'User'
-          }
-        });
+  success: true,
+  message: 'Profile data retrieved successfully',
+  user: {
+    userId: userId,
+    name: userData.name || '',
+    email: userData.email || '',
+    address: userData.address || '',
+    phonenumber: userData.phonenumber || '',
+    profileImage: userData.profileImage || '', // ADD THIS LINE
+    language: userData.language || '',
+    age: userData.age || '',
+    role: userData.role || 'User'
+  }
+});
+
 
       } catch (parseError) {
         return res.status(400).json({

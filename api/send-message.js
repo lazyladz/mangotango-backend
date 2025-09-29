@@ -59,60 +59,95 @@ module.exports = async (req, res) => {
         const messageId = newMessageRef.key;
 
         const messageData = {
-          id: messageId,
-          content: content,
-          senderId: senderId,
-          senderName: senderName || 'User',
-          senderAvatar: "/profilepic.jpg",
-          timestamp: Date.now(),
-          status: "sent",
-          readBy: { [senderId]: true }
-        };
+  id: messageId,
+  content: content,
+  senderId: senderId,
+  senderName: senderName, // Use the provided senderName (should be actual user name)
+  senderAvatar: "/profilepic.jpg",
+  timestamp: Date.now(),
+  status: "sent",
+  readBy: { [senderId]: true }
+};
 
         // Update conversation last message
         const conversationRef = db.ref(`conversations/${conversationId}`);
         const conversationUpdate = {
-          lastMessage: {
-            content: content,
-            senderId: senderId,
-            senderName: senderName || 'User',
-            timestamp: Date.now()
-          },
-          lastMessageTime: Date.now(),
-          updatedAt: Date.now()
-        };
+  lastMessage: {
+    content: content,
+    senderId: senderId,
+    senderName: senderName, // Use actual user name, not "User"
+    timestamp: Date.now()
+  },
+  lastMessageTime: Date.now(),
+  updatedAt: Date.now()
+};
 
         // If conversation doesn't exist, create it
         const conversationSnapshot = await conversationRef.once('value');
-        if (!conversationSnapshot.exists()) {
-          const participants = [userId, technicianId].sort();
-          const participantDetails = {
-            [userId]: {
-              name: senderName || 'User',
-              avatar: "/profilepic.jpg",
-              role: "User",
-              id: userId
-            },
-            [technicianId]: {
-              name: "Technician", // You might want to fetch this from Firestore
-              avatar: "/profilepic.jpg", 
-              role: "Technician",
-              id: technicianId
-            }
-          };
+if (!conversationSnapshot.exists()) {
+  const participants = [userId, technicianId].sort();
+  
+  // Get ACTUAL user name (app user)
+  let actualUserName = senderName;
+  let actualTechName = "Technician";
+  
+  try {
+    // Get app user's actual name from Realtime Database
+    const userSnapshot = await db.ref(`users/${userId}`).once('value');
+    if (userSnapshot.exists()) {
+      const userData = userSnapshot.val();
+      actualUserName = userData.name || senderName;
+      console.log('DEBUG_SEND_MESSAGE: Found app user name:', actualUserName);
+    } else {
+      console.log('DEBUG_SEND_MESSAGE: App user not found in Realtime Database');
+    }
+    
+    // Get technician's actual name from Firestore (for web user)
+    const techSnapshot = await firestore.collection('technician')
+      .where('authUID', '==', technicianId)
+      .get();
+    if (!techSnapshot.empty) {
+      const techData = techSnapshot.docs[0].data();
+      actualTechName = `${techData.firstName || ''} ${techData.lastName || ''}`.trim() || "Technician";
+      console.log('DEBUG_SEND_MESSAGE: Found technician name:', actualTechName);
+    } else {
+      console.log('DEBUG_SEND_MESSAGE: Technician not found in Firestore');
+    }
+  } catch (error) {
+    console.log('DEBUG_SEND_MESSAGE: Error fetching names:', error);
+  }
 
-          await conversationRef.set({
-            id: conversationId,
-            participants: participants,
-            participantDetails: participantDetails,
-            lastMessage: conversationUpdate.lastMessage,
-            lastMessageTime: conversationUpdate.lastMessageTime,
-            createdAt: Date.now(),
-            updatedAt: Date.now()
-          });
-        } else {
-          await conversationRef.update(conversationUpdate);
-        }
+  // Store BOTH names properly so web users can see app user's real name
+  const participantDetails = {
+    [userId]: {
+      name: actualUserName, // App user's REAL name
+      avatar: "/profilepic.jpg",
+      role: "User", 
+      id: userId
+    },
+    [technicianId]: {
+      name: actualTechName, // Technician's real name
+      avatar: "/profilepic.jpg", 
+      role: "Technician",
+      id: technicianId
+    }
+  };
+
+  await conversationRef.set({
+    id: conversationId,
+    participants: participants,
+    participantDetails: participantDetails, // This is what the web uses
+    lastMessage: {
+      content: content,
+      senderId: senderId,
+      senderName: actualUserName, // Use actual name here too
+      timestamp: Date.now()
+    },
+    lastMessageTime: Date.now(),
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  });
+}
 
         // Save the message
         await newMessageRef.set(messageData);

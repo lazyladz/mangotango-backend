@@ -98,13 +98,17 @@ module.exports = async (req, res) => {
               }
 
               conversations.push({
-                conversationId: conversation.id,
-                technicianId: otherParticipantId,
-                technicianName: technicianName,
-                lastMessage: conversation.lastMessage?.content || '',
-                lastMessageTime: conversation.lastMessageTime || conversation.updatedAt || 0,
-                unreadCount: 0
-              });
+  conversationId: conversation.id,
+  technicianId: otherParticipantId,
+  technicianName: technicianName,
+  // ADD THESE FIELDS FOR WEB USERS:
+  userId: userId, // The app user's ID
+  userName: actualUserName, // The app user's actual name
+  lastMessage: conversation.lastMessage?.content || '',
+  lastMessageTime: conversation.lastMessageTime || conversation.updatedAt || 0,
+  unreadCount: 0,
+  userRole: userRole
+});
             }
           }
         });

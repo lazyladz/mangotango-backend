@@ -45,8 +45,15 @@ module.exports = async (req, res) => {
           profileImage
         } = JSON.parse(body);
 
+        console.log('DEBUG_UPDATE: Received update request');
+        console.log('DEBUG_UPDATE: userId:', userId);
+        console.log('DEBUG_UPDATE: name:', name);
+        console.log('DEBUG_UPDATE: profileImage length:', profileImage?.length);
+        console.log('DEBUG_UPDATE: profileImage starts with:', profileImage?.substring(0, 50));
+
         // Validate required fields
         if (!userId || !name || !email) {
+          console.log('DEBUG_UPDATE: Missing required fields');
           return res.status(400).json({
             success: false,
             message: 'User ID, name, and email are required'
@@ -56,6 +63,7 @@ module.exports = async (req, res) => {
         // Check if user exists
         const userSnapshot = await db.ref(`users/${userId}`).once('value');
         if (!userSnapshot.exists()) {
+          console.log('DEBUG_UPDATE: User not found:', userId);
           return res.status(404).json({
             success: false,
             message: 'User not found'
@@ -72,7 +80,14 @@ module.exports = async (req, res) => {
           updatedAt: Date.now()
         };
 
+        console.log('DEBUG_UPDATE: Updating database with:', {
+          ...updatedData,
+          profileImage: updatedData.profileImage ? `${updatedData.profileImage.substring(0, 50)}...` : 'empty'
+        });
+
         await db.ref(`users/${userId}`).update(updatedData);
+
+        console.log('DEBUG_UPDATE: Database update successful');
 
         return res.status(200).json({
           success: true,
@@ -88,6 +103,7 @@ module.exports = async (req, res) => {
         });
 
       } catch (parseError) {
+        console.log('DEBUG_UPDATE: JSON parse error:', parseError);
         return res.status(400).json({
           success: false,
           message: 'Invalid JSON in request body'

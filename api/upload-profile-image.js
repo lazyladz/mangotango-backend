@@ -1,4 +1,19 @@
 // api/upload-profile-image.js
+const admin = require('firebase-admin');
+
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+    }),
+    databaseURL: process.env.FIREBASE_DATABASE_URL
+  });
+}
+
+const db = admin.database();
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -24,7 +39,13 @@ module.exports = async (req, res) => {
       try {
         const { userId, imageData } = JSON.parse(body);
         
+        console.log('DEBUG_UPLOAD: Received upload request');
+        console.log('DEBUG_UPLOAD: userId:', userId);
+        console.log('DEBUG_UPLOAD: imageData length:', imageData?.length);
+        console.log('DEBUG_UPLOAD: imageData starts with:', imageData?.substring(0, 50));
+        
         if (!userId || !imageData) {
+          console.log('DEBUG_UPLOAD: Missing userId or imageData');
           return res.status(400).json({
             success: false,
             message: 'User ID and image data are required'
@@ -33,6 +54,7 @@ module.exports = async (req, res) => {
 
         // Validate base64 image data
         if (!imageData.startsWith('data:image/')) {
+          console.log('DEBUG_UPLOAD: Invalid image format');
           return res.status(400).json({
             success: false,
             message: 'Invalid image format. Please provide base64 image data'
@@ -44,16 +66,16 @@ module.exports = async (req, res) => {
         const imageSize = (base64Data.length * 3) / 4; // Approximate size in bytes
         
         if (imageSize > 2 * 1024 * 1024) { // 2MB limit
+          console.log('DEBUG_UPLOAD: Image too large:', imageSize);
           return res.status(400).json({
             success: false,
             message: 'Image too large. Please use images smaller than 2MB'
           });
         }
 
-        // For base64 storage, we just return the base64 string
-        // The actual storage will happen in update-profile API
-        // This API just validates and processes the image
+        console.log('DEBUG_UPLOAD: Image validation passed, returning base64 data');
         
+        // For base64 storage, we just return the base64 string
         return res.status(200).json({
           success: true,
           imageUrl: imageData, // Return the base64 string as "imageUrl"
@@ -61,6 +83,7 @@ module.exports = async (req, res) => {
         });
 
       } catch (parseError) {
+        console.log('DEBUG_UPLOAD: JSON parse error:', parseError);
         return res.status(400).json({
           success: false,
           message: 'Invalid JSON in request body'

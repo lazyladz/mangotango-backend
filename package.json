@@ -2,6 +2,7 @@
   "name": "mangotango-backend",
   "version": "1.0.0",
   "dependencies": {
-    "nodemailer": "^6.9.7"
+    "nodemailer": "^6.9.7",
+    "firebase-admin": "^11.8.0"
   }
 }

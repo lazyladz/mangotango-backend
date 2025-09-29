@@ -48,6 +48,29 @@ module.exports = async (req, res) => {
           });
         }
 
+        // Get user's actual name first
+        let userName = 'User';
+        try {
+          const userSnapshot = await db.ref(`users/${userId}`).once('value');
+          if (userSnapshot.exists()) {
+            const userData = userSnapshot.val();
+            userName = userData.name || 'User';
+            console.log('DEBUG_CONVERSATIONS: Found user name:', userName);
+          } else {
+            // Try Firestore as fallback (for technicians)
+            const techSnapshot = await firestore.collection('technician')
+              .where('authUID', '==', userId)
+              .get();
+            if (!techSnapshot.empty) {
+              const techData = techSnapshot.docs[0].data();
+              userName = `${techData.firstName || ''} ${techData.lastName || ''}`.trim() || 'User';
+              console.log('DEBUG_CONVERSATIONS: Found technician name:', userName);
+            }
+          }
+        } catch (nameError) {
+          console.log('DEBUG_CONVERSATIONS: Error fetching user name:', nameError);
+        }
+
         // Get conversations from Realtime Database
         const conversationsRef = db.ref('conversations');
         const snapshot = await conversationsRef.orderByChild('participants').once('value');
@@ -65,13 +88,22 @@ module.exports = async (req, res) => {
             if (otherParticipantId) {
               const participantDetails = conversation.participantDetails?.[otherParticipantId] || {};
               
+              // Get technician name from participantDetails or use fallback
+              let technicianName = participantDetails.name || 'Technician';
+              
+              // If we don't have a proper name in participantDetails, try to get it
+              if (technicianName === 'Technician' || !technicianName) {
+                // You could add additional logic here to fetch from Firestore if needed
+                console.log('DEBUG_CONVERSATIONS: Using fallback name for technician:', otherParticipantId);
+              }
+
               conversations.push({
                 conversationId: conversation.id,
                 technicianId: otherParticipantId,
-                technicianName: participantDetails.name || 'Technician',
+                technicianName: technicianName,
                 lastMessage: conversation.lastMessage?.content || '',
                 lastMessageTime: conversation.lastMessageTime || conversation.updatedAt || 0,
-                unreadCount: 0 // You can implement this later
+                unreadCount: 0
               });
             }
           }
@@ -80,11 +112,12 @@ module.exports = async (req, res) => {
         // Sort by last message time (most recent first)
         conversations.sort((a, b) => b.lastMessageTime - a.lastMessageTime);
 
-        console.log('DEBUG_CONVERSATIONS: Found', conversations.length, 'conversations');
+        console.log('DEBUG_CONVERSATIONS: Found', conversations.length, 'conversations for user:', userName);
 
         return res.status(200).json({
           success: true,
           message: 'Conversations fetched successfully',
+          userName: userName, // Return the actual user name
           conversations: conversations
         });
 

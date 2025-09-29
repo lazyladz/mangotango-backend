@@ -12,6 +12,7 @@ if (!admin.apps.length) {
 }
 
 const db = admin.database();
+const firestore = admin.firestore(); // Add Firestore for technician data
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Credentials', true);
@@ -36,46 +37,131 @@ module.exports = async (req, res) => {
     
     req.on('end', async () => {
       try {
-        const { conversationId } = JSON.parse(body);
+        const { 
+          conversationId, 
+          senderId, 
+          senderName, 
+          content, 
+          technicianId,
+          userId 
+        } = JSON.parse(body);
 
-        console.log('DEBUG_MESSAGES: Fetching messages for conversation:', conversationId);
+        console.log('DEBUG_SEND_MESSAGE: Sending message for conversation:', conversationId);
 
-        if (!conversationId) {
+        if (!conversationId || !senderId || !content) {
           return res.status(400).json({
             success: false,
-            message: 'Conversation ID is required'
+            message: 'Conversation ID, sender ID, and content are required'
           });
         }
 
-        // Get messages from Realtime Database
         const messagesRef = db.ref(`messages/${conversationId}`);
-        const snapshot = await messagesRef.orderByChild('timestamp').once('value');
-        
-        const messages = [];
-        
-        snapshot.forEach((messageSnapshot) => {
-          const message = messageSnapshot.val();
-          messages.push({
-            id: message.id,
-            content: message.content,
-            senderId: message.senderId,
-            senderName: message.senderName,
-            timestamp: message.timestamp,
-            status: message.status,
-            readBy: message.readBy || {}
-          });
-        });
+        const newMessageRef = messagesRef.push();
+        const messageId = newMessageRef.key;
 
-        console.log('DEBUG_MESSAGES: Found', messages.length, 'messages');
+        const messageData = {
+          id: messageId,
+          content: content,
+          senderId: senderId,
+          senderName: senderName || 'User',
+          senderAvatar: "/profilepic.jpg",
+          timestamp: Date.now(),
+          status: "sent",
+          readBy: { [senderId]: true }
+        };
+
+        // Update conversation last message
+        const conversationRef = db.ref(`conversations/${conversationId}`);
+        const conversationUpdate = {
+          lastMessage: {
+            content: content,
+            senderId: senderId,
+            senderName: senderName || 'User',
+            timestamp: Date.now()
+          },
+          lastMessageTime: Date.now(),
+          updatedAt: Date.now()
+        };
+
+        // 👇 PUT THE CODE HERE - This is where it goes 👇
+        // If conversation doesn't exist, create it with proper names
+        const conversationSnapshot = await conversationRef.once('value');
+        if (!conversationSnapshot.exists()) {
+          const participants = [userId, technicianId].sort();
+          
+          // Get actual user name instead of hardcoding "User"
+          let actualUserName = senderName;
+          let actualTechName = "Technician";
+          
+          try {
+            // Get user's actual name
+            const userSnapshot = await db.ref(`users/${userId}`).once('value');
+            if (userSnapshot.exists()) {
+              const userData = userSnapshot.val();
+              actualUserName = userData.name || senderName;
+              console.log('DEBUG_SEND_MESSAGE: Found user name:', actualUserName);
+            }
+            
+            // Get technician's actual name from Firestore
+            const techSnapshot = await firestore.collection('technician')
+              .where('authUID', '==', technicianId)
+              .get();
+            if (!techSnapshot.empty) {
+              const techData = techSnapshot.docs[0].data();
+              actualTechName = `${techData.firstName || ''} ${techData.lastName || ''}`.trim() || "Technician";
+              console.log('DEBUG_SEND_MESSAGE: Found technician name:', actualTechName);
+            }
+          } catch (error) {
+            console.log('DEBUG_SEND_MESSAGE: Error fetching names:', error);
+          }
+
+          const participantDetails = {
+            [userId]: {
+              name: actualUserName, // Use actual name instead of "User"
+              avatar: "/profilepic.jpg",
+              role: "User",
+              id: userId
+            },
+            [technicianId]: {
+              name: actualTechName, // Use actual technician name
+              avatar: "/profilepic.jpg", 
+              role: "Technician",
+              id: technicianId
+            }
+          };
+
+          await conversationRef.set({
+            id: conversationId,
+            participants: participants,
+            participantDetails: participantDetails,
+            lastMessage: conversationUpdate.lastMessage,
+            lastMessageTime: conversationUpdate.lastMessageTime,
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+          });
+          
+          console.log('DEBUG_SEND_MESSAGE: Created new conversation with proper names');
+        } else {
+          // Conversation exists, just update last message
+          await conversationRef.update(conversationUpdate);
+          console.log('DEBUG_SEND_MESSAGE: Updated existing conversation');
+        }
+        // 👆 END OF THE ADDED CODE 👆
+
+        // Save the message
+        await newMessageRef.set(messageData);
+
+        console.log('DEBUG_SEND_MESSAGE: Message sent successfully');
 
         return res.status(200).json({
           success: true,
-          message: 'Messages fetched successfully',
-          messages: messages
+          message: 'Message sent successfully',
+          messageId: messageId,
+          timestamp: messageData.timestamp
         });
 
       } catch (parseError) {
-        console.error('DEBUG_MESSAGES: JSON parse error:', parseError);
+        console.error('DEBUG_SEND_MESSAGE: JSON parse error:', parseError);
         return res.status(400).json({
           success: false,
           message: 'Invalid JSON in request body'
@@ -84,7 +170,7 @@ module.exports = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Get messages error:', error);
+    console.error('Send message error:', error);
     return res.status(500).json({
       success: false,
       message: 'Internal server error',

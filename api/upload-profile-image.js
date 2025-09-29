@@ -1,5 +1,5 @@
-// api/upload-profile-image.js
 const admin = require('firebase-admin');
+const cloudinary = require('cloudinary').v2;
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -14,12 +14,19 @@ if (!admin.apps.length) {
 
 const db = admin.database();
 
+// ✅ Cloudinary config
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  
+
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
@@ -34,56 +41,43 @@ module.exports = async (req, res) => {
     req.on('data', chunk => {
       body += chunk.toString();
     });
-    
+
     req.on('end', async () => {
       try {
         const { userId, imageData } = JSON.parse(body);
-        
-        console.log('DEBUG_UPLOAD: Received upload request');
+
         console.log('DEBUG_UPLOAD: userId:', userId);
-        console.log('DEBUG_UPLOAD: imageData length:', imageData?.length);
-        console.log('DEBUG_UPLOAD: imageData starts with:', imageData?.substring(0, 50));
-        
+
         if (!userId || !imageData) {
-          console.log('DEBUG_UPLOAD: Missing userId or imageData');
           return res.status(400).json({
             success: false,
             message: 'User ID and image data are required'
           });
         }
 
-        // Validate base64 image data
         if (!imageData.startsWith('data:image/')) {
-          console.log('DEBUG_UPLOAD: Invalid image format');
           return res.status(400).json({
             success: false,
             message: 'Invalid image format. Please provide base64 image data'
           });
         }
 
-        // Check image size (limit to 2MB to prevent database bloat)
-        const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
-        const imageSize = (base64Data.length * 3) / 4; // Approximate size in bytes
-        
-        if (imageSize > 2 * 1024 * 1024) { // 2MB limit
-          console.log('DEBUG_UPLOAD: Image too large:', imageSize);
-          return res.status(400).json({
-            success: false,
-            message: 'Image too large. Please use images smaller than 2MB'
-          });
-        }
-
-        console.log('DEBUG_UPLOAD: Image validation passed, returning base64 data');
-        
-        // For base64 storage, we just return the base64 string
-        return res.status(200).json({
-          success: true,
-          imageUrl: imageData, // Return the base64 string as "imageUrl"
-          message: 'Image processed successfully. Ready to save to profile.'
+        // ✅ Upload to Cloudinary
+        const uploadResult = await cloudinary.uploader.upload(imageData, {
+          folder: 'profile_images'
         });
 
+        // ✅ Save only URL to Firebase
+        await db.ref(`users/${userId}`).update({ profileImage: uploadResult.secure_url });
+
+        return res.status(200).json({
+  success: true,
+  message: 'Profile image updated successfully',
+  imageUrl: uploadResult.secure_url   // 👈 matches Android code
+});
+
       } catch (parseError) {
-        console.log('DEBUG_UPLOAD: JSON parse error:', parseError);
+        console.error('JSON Parse error:', parseError);
         return res.status(400).json({
           success: false,
           message: 'Invalid JSON in request body'

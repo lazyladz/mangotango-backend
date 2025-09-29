@@ -1,4 +1,12 @@
 const admin = require('firebase-admin');
+const cloudinary = require('cloudinary').v2;
+
+// ✅ Cloudinary config
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -70,13 +78,27 @@ module.exports = async (req, res) => {
           });
         }
 
+        // ✅ Upload to Cloudinary if profileImage is base64
+        let uploadedImageUrl = '';
+        if (profileImage && profileImage.startsWith('data:image/')) {
+          try {
+            const uploadResult = await cloudinary.uploader.upload(profileImage, {
+              folder: 'profile_images'
+            });
+            uploadedImageUrl = uploadResult.secure_url;
+            console.log('DEBUG_UPDATE: Uploaded image to Cloudinary:', uploadedImageUrl);
+          } catch (cloudErr) {
+            console.error('DEBUG_UPDATE: Cloudinary upload failed:', cloudErr);
+          }
+        }
+
         // Update user data
         const updatedData = {
           name: name,
           email: email,
           address: address || '',
           phonenumber: phonenumber || '',
-          profileImage: profileImage || '',
+          profileImage: uploadedImageUrl || profileImage || '',
           updatedAt: Date.now()
         };
 
@@ -98,7 +120,7 @@ module.exports = async (req, res) => {
             email: email,
             address: address,
             phonenumber: phonenumber,
-            profileImage: profileImage || ''
+            profileImage: updatedData.profileImage
           }
         });
 

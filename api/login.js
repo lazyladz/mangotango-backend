@@ -67,7 +67,9 @@ module.exports = async (req, res) => {
 
     // Step 2: Use Admin SDK to get user data from Realtime Database
     const userSnapshot = await db.ref(`users/${userId}`).once('value');
-    const userData = userSnapshot.val();
+    let userData = userSnapshot.val();
+
+    console.log('DEBUG_LOGIN: User data from database:', userData);
 
     if (!userData) {
       return res.status(404).json({
@@ -75,6 +77,30 @@ module.exports = async (req, res) => {
         message: 'User data not found'
       });
     }
+
+    // 🔥 CRITICAL FIX: Ensure user has a proper name
+    let userName = userData.name || '';
+    
+    // If name is empty, "User", or missing, set a proper name
+    if (!userName || userName.trim() === '' || userName === 'User') {
+      console.log('DEBUG_LOGIN: User has invalid name, setting proper name');
+      
+      // Use email prefix as name, or a default
+      userName = email.split('@')[0] || 'App User';
+      
+      // Update the database with the proper name
+      await db.ref(`users/${userId}`).update({
+        name: userName,
+        updatedAt: Date.now()
+      });
+      
+      console.log('DEBUG_LOGIN: Updated user name to:', userName);
+      
+      // Update the userData for response
+      userData.name = userName;
+    }
+
+    console.log('DEBUG_LOGIN: Final user name:', userName);
 
     // Step 3: Return success response with user data
     return res.status(200).json({
@@ -84,7 +110,7 @@ module.exports = async (req, res) => {
         userId: userId,
         idToken: authResult.idToken,
         refreshToken: authResult.refreshToken,
-        name: userData.name || '',
+        name: userName, // Use the validated name
         email: userData.email || '',
         address: userData.address || '',
         language: userData.language || '',

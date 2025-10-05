@@ -14,11 +14,10 @@ if (!admin.apps.length) {
 const db = admin.database();
 
 module.exports = async (req, res) => {
-  res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
@@ -30,43 +29,38 @@ module.exports = async (req, res) => {
 
   try {
     let body = '';
-    req.on('data', chunk => {
-      body += chunk.toString();
-    });
+    req.on('data', chunk => { body += chunk.toString(); });
     
     req.on('end', async () => {
       try {
         const { conversationId } = JSON.parse(body);
-
-        console.log('DEBUG_GET_MESSAGES: Fetching messages for conversation:', conversationId);
-
         if (!conversationId) {
-          return res.status(400).json({
-            success: false,
-            message: 'Conversation ID is required'
-          });
+          return res.status(400).json({ success: false, message: 'Conversation ID is required' });
         }
 
-        // Get messages from Realtime Database
         const messagesRef = db.ref(`messages/${conversationId}`);
         const snapshot = await messagesRef.orderByChild('timestamp').once('value');
         
         const messages = [];
-        
         snapshot.forEach((messageSnapshot) => {
           const message = messageSnapshot.val();
-          messages.push({
-            id: message.id,
-            content: message.content,
-            senderId: message.senderId,
-            senderName: message.senderName, // This should show the actual name
-            timestamp: message.timestamp,
-            status: message.status,
-            readBy: message.readBy || {}
-          });
+          if (message) {
+            let ts = message.timestamp;
+            if (typeof ts !== 'number') ts = Date.now(); // ✅ FIXED
+            messages.push({
+              id: message.id,
+              content: message.content,
+              senderId: message.senderId,
+              senderName: message.senderName,
+              timestamp: ts,
+              status: message.status,
+              readBy: message.readBy || {}
+            });
+          }
         });
 
-        console.log('DEBUG_GET_MESSAGES: Found', messages.length, 'messages');
+        // ✅ FIXED: Ensure messages are sorted
+        messages.sort((a, b) => a.timestamp - b.timestamp);
 
         return res.status(200).json({
           success: true,
@@ -74,21 +68,12 @@ module.exports = async (req, res) => {
           messages: messages
         });
 
-      } catch (parseError) {
-        console.error('DEBUG_GET_MESSAGES: JSON parse error:', parseError);
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid JSON in request body'
-        });
+      } catch (err) {
+        return res.status(400).json({ success: false, message: 'Invalid JSON' });
       }
     });
 
   } catch (error) {
-    console.error('Get messages error:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Internal server error',
-      error: error.message
-    });
+    return res.status(500).json({ success: false, message: 'Internal server error', error: error.message });
   }
 };

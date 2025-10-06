@@ -12,7 +12,7 @@ if (!admin.apps.length) {
 }
 
 const db = admin.database();
-const firestore = admin.firestore(); // Add this line
+const firestore = admin.firestore();
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Credentials', true);
@@ -47,7 +47,7 @@ module.exports = async (req, res) => {
         } = JSON.parse(body);
 
         console.log('DEBUG_SEND_MESSAGE: Sending message for conversation:', conversationId);
-        console.log('DEBUG_SEND_MESSAGE: senderName received:', senderName); // ADD THIS
+        console.log('DEBUG_SEND_MESSAGE: senderName received:', senderName);
 
         if (!conversationId || !senderId || !content) {
           return res.status(400).json({
@@ -56,7 +56,7 @@ module.exports = async (req, res) => {
           });
         }
 
-        // 🔥 CRITICAL FIX: Get actual user name from database if senderName is "User"
+        // Get actual user name from database if senderName is "User"
         let actualSenderName = senderName;
         if (!actualSenderName || actualSenderName === 'User') {
           console.log('DEBUG_SEND_MESSAGE: senderName is "User", fetching actual name from database');
@@ -76,13 +76,14 @@ module.exports = async (req, res) => {
         const newMessageRef = messagesRef.push();
         const messageId = newMessageRef.key;
 
+        // ✅ CRITICAL FIX: Use Firebase Server Timestamp
         const messageData = {
           id: messageId,
           content: content,
           senderId: senderId,
-          senderName: actualSenderName, // 🔥 Use the validated name, NOT "User"
+          senderName: actualSenderName,
           senderAvatar: "/profilepic.jpg",
-          timestamp: Date.now(),
+          timestamp: admin.database.ServerValue.TIMESTAMP, // ✅ Server timestamp
           status: "sent",
           readBy: { [senderId]: true }
         };
@@ -93,11 +94,11 @@ module.exports = async (req, res) => {
           lastMessage: {
             content: content,
             senderId: senderId,
-            senderName: actualSenderName, // 🔥 Use the validated name
-            timestamp: Date.now()
+            senderName: actualSenderName,
+            timestamp: admin.database.ServerValue.TIMESTAMP // ✅ Server timestamp
           },
-          lastMessageTime: Date.now(),
-          updatedAt: Date.now()
+          lastMessageTime: admin.database.ServerValue.TIMESTAMP, // ✅ Server timestamp
+          updatedAt: admin.database.ServerValue.TIMESTAMP // ✅ Server timestamp
         };
 
         // If conversation doesn't exist, create it
@@ -105,7 +106,7 @@ module.exports = async (req, res) => {
         if (!conversationSnapshot.exists()) {
           const participants = [userId, technicianId].sort();
           
-          let actualUserName = actualSenderName; // Use the validated name
+          let actualUserName = actualSenderName;
           let actualTechName = "Technician";
           
           try {
@@ -124,13 +125,13 @@ module.exports = async (req, res) => {
 
           const participantDetails = {
             [userId]: {
-              name: actualUserName, // App user's REAL name
+              name: actualUserName,
               avatar: "/profilepic.jpg",
               role: "User", 
               id: userId
             },
             [technicianId]: {
-              name: actualTechName, // Technician's real name
+              name: actualTechName,
               avatar: "/profilepic.jpg", 
               role: "Technician",
               id: technicianId
@@ -143,8 +144,8 @@ module.exports = async (req, res) => {
             participantDetails: participantDetails,
             lastMessage: conversationUpdate.lastMessage,
             lastMessageTime: conversationUpdate.lastMessageTime,
-            createdAt: Date.now(),
-            updatedAt: Date.now()
+            createdAt: admin.database.ServerValue.TIMESTAMP, // ✅ Server timestamp
+            updatedAt: admin.database.ServerValue.TIMESTAMP // ✅ Server timestamp
           });
         } else {
           // Conversation exists, just update last message
@@ -159,8 +160,7 @@ module.exports = async (req, res) => {
         return res.status(200).json({
           success: true,
           message: 'Message sent successfully',
-          messageId: messageId,
-          timestamp: messageData.timestamp
+          messageId: messageId
         });
 
       } catch (parseError) {

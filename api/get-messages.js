@@ -56,7 +56,7 @@ module.exports = async (req, res) => {
               content: message.content,
               senderId: message.senderId,
               senderName: message.senderName,
-              timestamp: ts,
+              timestamp: admin.database.ServerValue.TIMESTAMP,
               status: message.status,
               readBy: message.readBy || {}
             });

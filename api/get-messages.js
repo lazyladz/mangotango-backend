@@ -45,8 +45,12 @@ module.exports = async (req, res) => {
         snapshot.forEach((messageSnapshot) => {
           const message = messageSnapshot.val();
           if (message) {
+            // ✅ Ensure timestamp is always a valid number
             let ts = message.timestamp;
-            if (typeof ts !== 'number') ts = Date.now(); // ✅ FIXED
+            if (typeof ts !== 'number') {
+              ts = Date.now();
+            }
+
             messages.push({
               id: message.id,
               content: message.content,
@@ -59,7 +63,7 @@ module.exports = async (req, res) => {
           }
         });
 
-        // ✅ FIXED: Ensure messages are sorted
+        // ✅ Sort messages by timestamp before sending
         messages.sort((a, b) => a.timestamp - b.timestamp);
 
         return res.status(200).json({

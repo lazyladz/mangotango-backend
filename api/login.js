@@ -115,7 +115,8 @@ module.exports = async (req, res) => {
         address: userData.address || '',
         language: userData.language || '',
         age: userData.age || '',
-        phonenumber: userData.phonenumber || ''
+        phonenumber: userData.phonenumber || '',
+        profileImage: userData.profileImage || ''
       }
     });
 

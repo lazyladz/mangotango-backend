@@ -66,22 +66,42 @@ module.exports = async (req, res) => {
         console.log(`✅ Found FCM token for mobile user: ${recipientId}`);
 
         // 2. Prepare FCM message
-        const messagePayload = {
-          token: recipientToken,
-          notification: {
-            title: `💬 ${technicianName}`,
-            body: message
-          },
-          data: {
-            type: 'message',
-            technicianName: technicianName,
-            message: message,
-            conversationId: conversationId
-          },
-          android: {
-            priority: 'high'
-          }
-        };
+        // In the messagePayload section, add BOTH data and notification:
+const messagePayload = {
+  token: recipientToken,
+  notification: {
+    title: `💬 ${technicianName}`,
+    body: message,
+    sound: 'default',
+    badge: '1'
+  },
+  data: {
+    type: 'message',
+    technicianName: technicianName,
+    message: message,
+    conversationId: conversationId,
+    click_action: 'FLUTTER_NOTIFICATION_CLICK' // Important for some devices
+  },
+  android: {
+    priority: 'high',
+    notification: {
+      sound: 'default',
+      channel_id: 'MANGO_TANGO_PUSH'
+    }
+  },
+  apns: {
+    payload: {
+      aps: {
+        alert: {
+          title: `💬 ${technicianName}`,
+          body: message
+        },
+        sound: 'default',
+        badge: 1
+      }
+    }
+  }
+};
 
         // 3. Send via FCM
         const response = await admin.messaging().send(messagePayload);

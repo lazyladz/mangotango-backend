@@ -34,38 +34,40 @@ module.exports = async (req, res) => {
     req.on('end', async () => {
       try {
         const { 
-          farmerId, 
+          conversationId, 
           technicianName, 
-          message, 
-          conversationId 
+          message,
+          recipientId
         } = JSON.parse(body);
 
-        if (!farmerId || !technicianName || !message) {
+        if (!conversationId || !technicianName || !message || !recipientId) {
           return res.status(400).json({ 
             success: false, 
-            message: 'Farmer ID, technician name, and message are required' 
+            message: 'All fields are required' 
           });
         }
 
-        console.log(`📤 Sending push to farmer: ${farmerId}`);
+        console.log(`📤 Checking FCM token for recipient: ${recipientId}`);
 
-        // 1. Get farmer's FCM token from database
-        const tokenRef = db.ref(`user_tokens/${farmerId}`);
+        // 1. Check if recipient has FCM token (mobile user)
+        const tokenRef = db.ref(`user_tokens/${recipientId}`);
         const tokenSnapshot = await tokenRef.once('value');
         const tokenData = tokenSnapshot.val();
         
         if (!tokenData || !tokenData.fcmToken) {
-          return res.status(404).json({ 
-            success: false, 
-            message: 'Farmer FCM token not found' 
+          console.log(`📱 No FCM token found for recipient: ${recipientId} (likely web user)`);
+          return res.status(200).json({ 
+            success: true, 
+            message: 'Recipient is web user - no push notification sent' 
           });
         }
 
-        const farmerToken = tokenData.fcmToken;
+        const recipientToken = tokenData.fcmToken;
+        console.log(`✅ Found FCM token for mobile user: ${recipientId}`);
 
         // 2. Prepare FCM message
         const messagePayload = {
-          token: farmerToken,
+          token: recipientToken,
           notification: {
             title: `💬 ${technicianName}`,
             body: message
@@ -74,7 +76,7 @@ module.exports = async (req, res) => {
             type: 'message',
             technicianName: technicianName,
             message: message,
-            conversationId: conversationId || ''
+            conversationId: conversationId
           },
           android: {
             priority: 'high'
@@ -84,24 +86,25 @@ module.exports = async (req, res) => {
         // 3. Send via FCM
         const response = await admin.messaging().send(messagePayload);
         
-        console.log(`✅ Push sent to farmer: ${farmerId}`);
-        console.log(`👨‍💼 From: ${technicianName}`);
+        console.log(`✅ Push notification sent to mobile user: ${recipientId}`);
+        console.log(`👨‍💻 From: ${technicianName}`);
         console.log(`💬 Message: ${message}`);
+        console.log(`🎯 FCM Response: ${response}`);
 
         return res.status(200).json({
           success: true,
-          message: 'Push notification sent successfully',
+          message: 'Push notification sent successfully to mobile user',
           messageId: response
         });
 
       } catch (err) {
-        console.error('FCM Error:', err);
+        console.error('❌ FCM Error:', err);
         
         // Remove invalid token
         if (err.code === 'messaging/registration-token-not-registered') {
-          const { farmerId } = JSON.parse(body);
-          await db.ref(`user_tokens/${farmerId}`).remove();
-          console.log(`🗑️ Removed invalid token for: ${farmerId}`);
+          const { recipientId } = JSON.parse(body);
+          await db.ref(`user_tokens/${recipientId}`).remove();
+          console.log(`🗑️ Removed invalid FCM token for user: ${recipientId}`);
         }
 
         return res.status(500).json({ 
@@ -113,7 +116,7 @@ module.exports = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Server error:', error);
+    console.error('❌ Server error:', error);
     return res.status(500).json({ 
       success: false, 
       message: 'Internal server error', 

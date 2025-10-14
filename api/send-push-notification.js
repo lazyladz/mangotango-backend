@@ -63,30 +63,22 @@ module.exports = async (req, res) => {
     const recipientToken = tokenData.fcmToken;
     console.log(`✅ Found FCM token for: ${recipientId}`);
 
-    // 2. Prepare FCM message with both notification and data payload
+    // 2. Prepare FCM message (FIXED VERSION)
     const messagePayload = {
       token: recipientToken,
       notification: {
         title: `💬 ${technicianName}`,
-        body: message,
-        sound: 'default',
-        badge: '1'
+        body: message
       },
       data: {
         type: 'message',
         technicianName: technicianName,
         message: message,
         conversationId: conversationId,
-        senderId: senderId || 'unknown',
-        click_action: 'FLUTTER_NOTIFICATION_CLICK'
+        senderId: senderId || 'unknown'
       },
       android: {
-        priority: 'high',
-        notification: {
-          sound: 'default',
-          channel_id: 'MANGO_TANGO_PUSH',
-          click_action: 'FLUTTER_NOTIFICATION_CLICK'
-        }
+        priority: 'high'
       },
       apns: {
         payload: {
@@ -108,18 +100,6 @@ module.exports = async (req, res) => {
     console.log(`✅ Push notification sent successfully`);
     console.log(`🎯 FCM Message ID: ${response}`);
 
-    // 4. Log the notification
-    await db.ref('notification_logs').push().set({
-      recipientId: recipientId,
-      senderId: senderId,
-      technicianName: technicianName,
-      message: message.substring(0, 100),
-      conversationId: conversationId,
-      fcmMessageId: response,
-      sentAt: Date.now(),
-      status: 'delivered'
-    });
-
     return res.status(200).json({
       success: true,
       message: 'Push notification sent successfully',
@@ -135,22 +115,6 @@ module.exports = async (req, res) => {
       const { recipientId } = req.body;
       await db.ref(`user_tokens/${recipientId}`).remove();
       console.log(`🗑️ Removed invalid FCM token for user: ${recipientId}`);
-    }
-
-    // Log failed notification
-    try {
-      await db.ref('notification_logs').push().set({
-        recipientId: req.body.recipientId,
-        senderId: req.body.senderId,
-        technicianName: req.body.technicianName,
-        message: req.body.message?.substring(0, 100),
-        conversationId: req.body.conversationId,
-        error: error.message,
-        sentAt: Date.now(),
-        status: 'failed'
-      });
-    } catch (logError) {
-      console.error('Failed to log error:', logError);
     }
 
     return res.status(500).json({ 

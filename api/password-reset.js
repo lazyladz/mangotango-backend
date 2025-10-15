@@ -29,245 +29,209 @@ module.exports = async (req, res) => {
     return;
   }
 
-  // Route handling based on path
-  const path = req.url.split('?')[0]; // Get path without query parameters
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
 
-  if (path === '/send-email' || req.url === '/send-email') {
-    await handleSendEmail(req, res);
-  } else if (path === '/verify-code' || req.url === '/verify-code') {
-    await handleVerifyCode(req, res);
-  } else if (path === '/reset-password' || req.url === '/reset-password') {
-    await handleResetPassword(req, res);
-  } else {
-    return res.status(404).json({
+  try {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk.toString();
+    });
+    
+    req.on('end', async () => {
+      try {
+        const requestData = JSON.parse(body);
+        const { action, ...otherData } = requestData;
+
+        console.log('DEBUG_PASSWORD_RESET: Action:', action);
+
+        if (!action) {
+          return res.status(400).json({
+            success: false,
+            message: 'Action is required (send-email, verify-code, or reset-password)'
+          });
+        }
+
+        let result;
+
+        switch (action) {
+          case 'send-email':
+            result = await handleSendEmail(otherData);
+            break;
+
+          case 'verify-code':
+            result = await handleVerifyCode(otherData);
+            break;
+
+          case 'reset-password':
+            result = await handleResetPassword(otherData);
+            break;
+
+          default:
+            return res.status(400).json({
+              success: false,
+              message: 'Invalid action. Use: send-email, verify-code, or reset-password'
+            });
+        }
+
+        return res.status(200).json(result);
+
+      } catch (parseError) {
+        console.log('DEBUG_PASSWORD_RESET: JSON parse error:', parseError);
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid JSON in request body'
+        });
+      }
+    });
+
+  } catch (error) {
+    console.error('Password reset API error:', error);
+    return res.status(500).json({
       success: false,
-      message: 'Endpoint not found'
+      message: 'Internal server error',
+      error: error.message
     });
   }
 };
 
-// Send Email Function - FIXED: Add proper body parsing
-async function handleSendEmail(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+// Send Email Function
+async function handleSendEmail(data) {
+  const { email, username, code } = data;
 
-  try {
-    // Parse the request body first
-    let body = '';
-    req.on('data', chunk => {
-      body += chunk.toString();
-    });
-    
-    req.on('end', async () => {
-      try {
-        const { email, username, code } = JSON.parse(body);
+  console.log('DEBUG_SEND_EMAIL: Received data:', { email, username, code });
 
-        if (!email || !code) {
-          return res.status(400).json({
-            success: false,
-            message: 'Email and code are required'
-          });
-        }
-
-        const transporter = nodemailer.createTransport({
-          service: 'gmail',
-          auth: {
-            user: process.env.GMAIL_EMAIL,
-            pass: process.env.GMAIL_PASSWORD,
-          },
-        });
-
-        const mailOptions = {
-          from: `MangoTango App <${process.env.GMAIL_EMAIL}>`,
-          to: email,
-          subject: 'Password Reset Verification Code - MangoTango',
-          html: `Your verification code is: <strong>${code}</strong>`
-        };
-
-        await transporter.sendMail(mailOptions);
-        
-        return res.status(200).json({
-          success: true,
-          message: 'Verification code sent successfully'
-        });
-
-      } catch (parseError) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid JSON in request body'
-        });
-      }
-    });
-
-  } catch (error) {
-    console.error('Error sending email:', error);
-    return res.status(500).json({
+  if (!email || !code) {
+    return {
       success: false,
-      message: 'Failed to send verification email',
-      error: error.message
-    });
+      message: 'Email and code are required'
+    };
   }
+
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.GMAIL_EMAIL,
+      pass: process.env.GMAIL_PASSWORD,
+    },
+  });
+
+  const mailOptions = {
+    from: `MangoTango App <${process.env.GMAIL_EMAIL}>`,
+    to: email,
+    subject: 'Password Reset Verification Code - MangoTango',
+    html: `Your verification code is: <strong>${code}</strong>`
+  };
+
+  await transporter.sendMail(mailOptions);
+  
+  return {
+    success: true,
+    message: 'Verification code sent successfully'
+  };
 }
 
-// Verify Code Function (identical to original)
-async function handleVerifyCode(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+// Verify Code Function
+async function handleVerifyCode(data) {
+  const { userId, code } = data;
 
-  try {
-    let body = '';
-    req.on('data', chunk => {
-      body += chunk.toString();
-    });
-    
-    req.on('end', async () => {
-      try {
-        const { userId, code } = JSON.parse(body);
-
-        if (!userId || !code) {
-          return res.status(400).json({
-            success: false,
-            message: 'User ID and code are required'
-          });
-        }
-
-        const resetRef = db.ref(`password_reset_codes/${userId}`);
-        const snapshot = await resetRef.once('value');
-
-        if (!snapshot.exists()) {
-          return res.status(404).json({
-            success: false,
-            message: 'Code not found. Please request a new one.'
-          });
-        }
-
-        const resetData = snapshot.val();
-        const storedCode = resetData.code;
-        const expirationTime = resetData.expirationTime || 0;
-        const isUsed = resetData.used || false;
-        const currentTime = Date.now();
-
-        if (isUsed) {
-          return res.status(400).json({
-            success: false,
-            message: 'This code has already been used'
-          });
-        }
-
-        if (currentTime > expirationTime) {
-          return res.status(400).json({
-            success: false,
-            message: 'This code has expired. Please request a new one.'
-          });
-        }
-
-        if (storedCode !== code) {
-          return res.status(400).json({
-            success: false,
-            message: 'Invalid code. Please try again.'
-          });
-        }
-
-        await resetRef.update({ used: true });
-
-        return res.status(200).json({
-          success: true,
-          message: 'Code verified successfully!',
-          data: {
-            userId: userId,
-            verified: true
-          }
-        });
-
-      } catch (parseError) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid JSON in request body'
-        });
-      }
-    });
-
-  } catch (error) {
-    console.error('Verify code error:', error);
-    return res.status(500).json({
+  if (!userId || !code) {
+    return {
       success: false,
-      message: 'Internal server error',
-      error: error.message
-    });
+      message: 'User ID and code are required'
+    };
   }
+
+  const resetRef = db.ref(`password_reset_codes/${userId}`);
+  const snapshot = await resetRef.once('value');
+
+  if (!snapshot.exists()) {
+    return {
+      success: false,
+      message: 'Code not found. Please request a new one.'
+    };
+  }
+
+  const resetData = snapshot.val();
+  const storedCode = resetData.code;
+  const expirationTime = resetData.expirationTime || 0;
+  const isUsed = resetData.used || false;
+  const currentTime = Date.now();
+
+  if (isUsed) {
+    return {
+      success: false,
+      message: 'This code has already been used'
+    };
+  }
+
+  if (currentTime > expirationTime) {
+    return {
+      success: false,
+      message: 'This code has expired. Please request a new one.'
+    };
+  }
+
+  if (storedCode !== code) {
+    return {
+      success: false,
+      message: 'Invalid code. Please try again.'
+    };
+  }
+
+  await resetRef.update({ used: true });
+
+  return {
+    success: true,
+    message: 'Code verified successfully!',
+    data: {
+      userId: userId,
+      verified: true
+    }
+  };
 }
 
-// Reset Password Function (identical to original)
-async function handleResetPassword(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
+// Reset Password Function
+async function handleResetPassword(data) {
+  const { userId, email, newPassword } = data;
+
+  if (!userId || !email || !newPassword) {
+    return {
+      success: false,
+      message: 'User ID, email, and new password are required'
+    };
+  }
+
+  if (newPassword.length < 6) {
+    return {
+      success: false,
+      message: 'Password must be at least 6 characters'
+    };
   }
 
   try {
-    let body = '';
-    req.on('data', chunk => {
-      body += chunk.toString();
+    await auth.updateUser(userId, {
+      password: newPassword
     });
-    
-    req.on('end', async () => {
-      try {
-        const { userId, email, newPassword } = JSON.parse(body);
 
-        if (!userId || !email || !newPassword) {
-          return res.status(400).json({
-            success: false,
-            message: 'User ID, email, and new password are required'
-          });
-        }
+    await db.ref(`users/${userId}/password`).set(newPassword);
 
-        if (newPassword.length < 6) {
-          return res.status(400).json({
-            success: false,
-            message: 'Password must be at least 6 characters'
-          });
-        }
-
-        try {
-          await auth.updateUser(userId, {
-            password: newPassword
-          });
-
-          await db.ref(`users/${userId}/password`).set(newPassword);
-
-          return res.status(200).json({
-            success: true,
-            message: 'Password reset successful',
-            data: {
-              userId: userId,
-              passwordUpdated: true
-            }
-          });
-
-        } catch (authError) {
-          console.error('Auth update error:', authError);
-          return res.status(500).json({
-            success: false,
-            message: 'Failed to reset password',
-            error: authError.message
-          });
-        }
-
-      } catch (parseError) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid JSON in request body'
-        });
+    return {
+      success: true,
+      message: 'Password reset successful',
+      data: {
+        userId: userId,
+        passwordUpdated: true
       }
-    });
+    };
 
-  } catch (error) {
-    console.error('Reset password error:', error);
-    return res.status(500).json({
+  } catch (authError) {
+    console.error('Auth update error:', authError);
+    return {
       success: false,
-      message: 'Internal server error',
-      error: error.message
-    });
+      message: 'Failed to reset password',
+      error: authError.message
+    };
   }
 }

@@ -46,42 +46,58 @@ module.exports = async (req, res) => {
   }
 };
 
-// Send Email Function (identical to original)
+// Send Email Function - FIXED: Add proper body parsing
 async function handleSendEmail(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
-    const { email, username, code } = req.body;
-
-    if (!email || !code) {
-      return res.status(400).json({
-        success: false,
-        message: 'Email and code are required'
-      });
-    }
-
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.GMAIL_EMAIL,
-        pass: process.env.GMAIL_PASSWORD,
-      },
+    // Parse the request body first
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk.toString();
     });
-
-    const mailOptions = {
-      from: `MangoTango App <${process.env.GMAIL_EMAIL}>`,
-      to: email,
-      subject: 'Password Reset Verification Code - MangoTango',
-      html: `Your verification code is: <strong>${code}</strong>`
-    };
-
-    await transporter.sendMail(mailOptions);
     
-    return res.status(200).json({
-      success: true,
-      message: 'Verification code sent successfully'
+    req.on('end', async () => {
+      try {
+        const { email, username, code } = JSON.parse(body);
+
+        if (!email || !code) {
+          return res.status(400).json({
+            success: false,
+            message: 'Email and code are required'
+          });
+        }
+
+        const transporter = nodemailer.createTransport({
+          service: 'gmail',
+          auth: {
+            user: process.env.GMAIL_EMAIL,
+            pass: process.env.GMAIL_PASSWORD,
+          },
+        });
+
+        const mailOptions = {
+          from: `MangoTango App <${process.env.GMAIL_EMAIL}>`,
+          to: email,
+          subject: 'Password Reset Verification Code - MangoTango',
+          html: `Your verification code is: <strong>${code}</strong>`
+        };
+
+        await transporter.sendMail(mailOptions);
+        
+        return res.status(200).json({
+          success: true,
+          message: 'Verification code sent successfully'
+        });
+
+      } catch (parseError) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid JSON in request body'
+        });
+      }
     });
 
   } catch (error) {

@@ -30,112 +30,108 @@ module.exports = async (req, res) => {
   }
 
   try {
-    let body = '';
-    req.on('data', chunk => {
-      body += chunk.toString();
+    const { userId } = req.body;
+
+    console.log('GET_CONVERSATIONS: Fetching data for user:', userId);
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'User ID is required'
+      });
+    }
+
+    // Get all approved technicians
+    const techniciansSnapshot = await firestore.collection('technician')
+      .where('status', '==', 'Approved')
+      .get();
+
+    const allTechnicians = [];
+    techniciansSnapshot.forEach(doc => {
+      const techData = doc.data();
+      const technician = {
+        id: doc.id,
+        authUID: techData.authUID || doc.id,
+        firstName: techData.firstName || '',
+        lastName: techData.lastName || '',
+        department: techData.department || '',
+        address: techData.address || '',
+        profilePhoto: techData.profilePhoto || '',
+        expertise: techData.expertise || '',
+        role: techData.role || 'technician',
+        status: techData.status || 'Approved'
+      };
+      allTechnicians.push(technician);
     });
+
+    console.log('GET_CONVERSATIONS: Found', allTechnicians.length, 'approved technicians');
+
+    // Get user's conversations
+    const conversationsRef = db.ref('conversations');
+    const conversationsSnapshot = await conversationsRef.once('value');
     
-    req.on('end', async () => {
-      try {
-        const { userId } = JSON.parse(body);
+    const userConversations = [];
+    const techniciansWithChats = [];
 
-        console.log('DEBUG_CONVERSATIONS: Fetching conversations for user:', userId);
-
-        if (!userId) {
-          return res.status(400).json({
-            success: false,
-            message: 'User ID is required'
-          });
-        }
-
-        // Get user's actual name first
-        let userName = 'User';
-        try {
-          const userSnapshot = await db.ref(`users/${userId}`).once('value');
-          if (userSnapshot.exists()) {
-            const userData = userSnapshot.val();
-            userName = userData.name || 'User';
-            console.log('DEBUG_CONVERSATIONS: Found user name:', userName);
-          } else {
-            // Try Firestore as fallback (for technicians)
-            const techSnapshot = await firestore.collection('technician')
-              .where('authUID', '==', userId)
-              .get();
-            if (!techSnapshot.empty) {
-              const techData = techSnapshot.docs[0].data();
-              userName = `${techData.firstName || ''} ${techData.lastName || ''}`.trim() || 'User';
-              console.log('DEBUG_CONVERSATIONS: Found technician name:', userName);
-            }
-          }
-        } catch (nameError) {
-          console.log('DEBUG_CONVERSATIONS: Error fetching user name:', nameError);
-        }
-
-        // Get conversations from Realtime Database
-        const conversationsRef = db.ref('conversations');
-        const snapshot = await conversationsRef.orderByChild('participants').once('value');
+    if (conversationsSnapshot.exists()) {
+      conversationsSnapshot.forEach(conversationSnapshot => {
+        const conversation = conversationSnapshot.val();
         
-        const conversations = [];
-        
-        snapshot.forEach((conversationSnapshot) => {
-          const conversation = conversationSnapshot.val();
+        if (conversation.participants && conversation.participants.includes(userId)) {
+          const otherParticipantId = conversation.participants.find(pid => pid !== userId);
           
-          // Check if user is participant in this conversation
-          if (conversation.participants && conversation.participants.includes(userId)) {
-            // Find the other participant (technician)
-            const otherParticipantId = conversation.participants.find(pid => pid !== userId);
+          if (otherParticipantId) {
+            // ✅ FIX: Only include conversations with actual messages
+            const hasMessages = conversation.lastMessage && 
+                              conversation.lastMessage.content &&
+                              conversation.lastMessage.content.trim() !== '';
             
-            if (otherParticipantId) {
-              const participantDetails = conversation.participantDetails?.[otherParticipantId] || {};
-              
-              // Get technician name from participantDetails or use fallback
-              let technicianName = participantDetails.name || 'Technician';
-              
-              // If we don't have a proper name in participantDetails, try to get it
-              if (technicianName === 'Technician' || !technicianName) {
-                // You could add additional logic here to fetch from Firestore if needed
-                console.log('DEBUG_CONVERSATIONS: Using fallback name for technician:', otherParticipantId);
-              }
+            if (!hasMessages) {
+              console.log('GET_CONVERSATIONS: Skipping conversation - no messages');
+              return;
+            }
 
-              conversations.push({
-  conversationId: conversation.id,
-  technicianId: otherParticipantId,
-  technicianName: technicianName,
-  // ADD THESE FIELDS FOR WEB USERS:
-  userId: userId, // The app user's ID
-  userName: actualUserName, // The app user's actual name
-  lastMessage: conversation.lastMessage?.content || '',
-  lastMessageTime: conversation.lastMessageTime || conversation.updatedAt || 0,
-  unreadCount: 0,
-  userRole: userRole
-});
+            const lastMessage = conversation.lastMessage.content;
+            const lastMessageTime = conversation.lastMessageTime || conversation.updatedAt || 0;
+
+            // Find technician details
+            const technician = allTechnicians.find(t => t.authUID === otherParticipantId);
+            if (technician) {
+              const chatItem = {
+                technicianId: otherParticipantId,
+                technician: technician,
+                lastMessage: lastMessage,
+                lastMessageTime: lastMessageTime
+              };
+              userConversations.push(chatItem);
+              techniciansWithChats.push({
+                id: otherParticipantId,
+                technician: technician
+              });
             }
           }
-        });
+        }
+      });
+    }
 
-        // Sort by last message time (most recent first)
-        conversations.sort((a, b) => b.lastMessageTime - a.lastMessageTime);
+    // Sort conversations by last message time (most recent first)
+    userConversations.sort((a, b) => b.lastMessageTime - a.lastMessageTime);
 
-        console.log('DEBUG_CONVERSATIONS: Found', conversations.length, 'conversations for user:', userName);
+    console.log('GET_CONVERSATIONS: Found', userConversations.length, 'conversations with messages');
+    console.log('GET_CONVERSATIONS: Total technicians:', allTechnicians.length);
 
-        return res.status(200).json({
-          success: true,
-          message: 'Conversations fetched successfully',
-          userName: userName, // Return the actual user name
-          conversations: conversations
-        });
-
-      } catch (parseError) {
-        console.error('DEBUG_CONVERSATIONS: JSON parse error:', parseError);
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid JSON in request body'
-        });
+    return res.status(200).json({
+      success: true,
+      message: 'Data fetched successfully',
+      data: {
+        allTechnicians: allTechnicians,
+        conversations: userConversations,
+        techniciansWithChats: techniciansWithChats
       }
     });
 
   } catch (error) {
-    console.error('Get conversations error:', error);
+    console.error('GET_CONVERSATIONS Error:', error);
     return res.status(500).json({
       success: false,
       message: 'Internal server error',

@@ -48,7 +48,7 @@ module.exports = async (req, res) => {
 
     const allTechnicians = [];
     
-    // 🔥 NEW: Fetch profile images for each technician
+    // 🔥 FIXED: Fetch profile images for each technician
     for (const doc of techniciansSnapshot.docs) {
       const techData = doc.data();
       const techId = techData.authUID || doc.id;
@@ -67,8 +67,8 @@ module.exports = async (req, res) => {
           if (imageSnapshot.exists()) {
             const imageData = imageSnapshot.val();
             if (imageData.base64) {
-              // Create data URL from base64 that Android can use directly
-              profileImageUrl = `data:${imageData.imageType || 'image/jpeg'};base64,${imageData.base64}`;
+              // ✅ FIXED: Create proper data URL format
+              profileImageUrl = `data:image/jpeg;base64,${imageData.base64}`;
               console.log(`✅ Successfully loaded profile image for ${techId}`);
             } else {
               console.log(`❌ No base64 data found for technician ${techId}`);
@@ -92,7 +92,7 @@ module.exports = async (req, res) => {
         lastName: techData.lastName || '',
         department: techData.department || '',
         address: techData.address || '',
-        profilePhoto: profileImageUrl, // Now contains actual image data URL or null
+        profilePhoto: profileImageUrl, // Now contains proper image data URL or null
         profilePhotoPath: profilePhotoPath, // Keep original path for reference
         expertise: techData.expertise || '',
         role: techData.role || 'technician',

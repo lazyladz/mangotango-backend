@@ -47,22 +47,57 @@ module.exports = async (req, res) => {
       .get();
 
     const allTechnicians = [];
-    techniciansSnapshot.forEach(doc => {
+    
+    // 🔥 NEW: Fetch profile images for each technician
+    for (const doc of techniciansSnapshot.docs) {
       const techData = doc.data();
+      const techId = techData.authUID || doc.id;
+      
+      let profileImageUrl = null;
+      let profilePhotoPath = techData.profilePhoto || '';
+      
+      // If profilePhoto exists and points to Realtime DB, fetch the actual image
+      if (profilePhotoPath && profilePhotoPath.startsWith('technician_images/')) {
+        try {
+          console.log(`🖼️ Fetching profile image for technician ${techId} from path: ${profilePhotoPath}`);
+          
+          const imageRef = db.ref(profilePhotoPath);
+          const imageSnapshot = await imageRef.once('value');
+          
+          if (imageSnapshot.exists()) {
+            const imageData = imageSnapshot.val();
+            if (imageData.base64) {
+              // Create data URL from base64 that Android can use directly
+              profileImageUrl = `data:${imageData.imageType || 'image/jpeg'};base64,${imageData.base64}`;
+              console.log(`✅ Successfully loaded profile image for ${techId}`);
+            } else {
+              console.log(`❌ No base64 data found for technician ${techId}`);
+            }
+          } else {
+            console.log(`❌ No image data found at path: ${profilePhotoPath}`);
+          }
+        } catch (imageError) {
+          console.warn(`⚠️ Failed to fetch profile image for technician ${techId}:`, imageError.message);
+        }
+      } else if (profilePhotoPath) {
+        console.log(`ℹ️ Profile photo path for ${techId} is not a Realtime DB path: ${profilePhotoPath}`);
+      }
+      
       const technician = {
         id: doc.id,
-        authUID: techData.authUID || doc.id,
+        authUID: techId,
         firstName: techData.firstName || '',
         lastName: techData.lastName || '',
         department: techData.department || '',
         address: techData.address || '',
-        profilePhoto: techData.profilePhoto || '',
+        profilePhoto: profileImageUrl, // Now contains actual image data URL or null
+        profilePhotoPath: profilePhotoPath, // Keep original path for reference
         expertise: techData.expertise || '',
         role: techData.role || 'technician',
         status: techData.status || 'Approved'
       };
       allTechnicians.push(technician);
-    });
+    }
 
     console.log('GET_CONVERSATIONS: Found', allTechnicians.length, 'approved technicians');
 
@@ -117,8 +152,11 @@ module.exports = async (req, res) => {
     // Sort conversations by last message time (most recent first)
     userConversations.sort((a, b) => b.lastMessageTime - a.lastMessageTime);
 
+    // Log image loading statistics
+    const techniciansWithImages = allTechnicians.filter(t => t.profilePhoto !== null).length;
+    console.log(`🖼️ Image loading results: ${techniciansWithImages}/${allTechnicians.length} technicians have profile images`);
+
     console.log('GET_CONVERSATIONS: Found', userConversations.length, 'conversations with messages');
-    console.log('GET_CONVERSATIONS: Total technicians:', allTechnicians.length);
 
     return res.status(200).json({
       success: true,
@@ -126,7 +164,11 @@ module.exports = async (req, res) => {
       data: {
         allTechnicians: allTechnicians,
         conversations: userConversations,
-        techniciansWithChats: techniciansWithChats
+        techniciansWithChats: techniciansWithChats,
+        imageStats: {
+          totalTechnicians: allTechnicians.length,
+          withProfileImages: techniciansWithImages
+        }
       }
     });
 

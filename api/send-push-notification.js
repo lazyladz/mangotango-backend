@@ -14,10 +14,13 @@ if (!admin.apps.length) {
 const db = admin.database();
 
 module.exports = async (req, res) => {
+  // 🔥 COMPLETE CORS HEADERS
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS,PATCH');
+  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization');
+  
+  // Handle preflight requests
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
@@ -63,7 +66,7 @@ module.exports = async (req, res) => {
     const recipientToken = tokenData.fcmToken;
     console.log(`✅ Found FCM token for: ${recipientId}`);
 
-    // 2. Prepare FCM message (FIXED VERSION)
+    // 2. Prepare FCM message
     const messagePayload = {
       token: recipientToken,
       notification: {

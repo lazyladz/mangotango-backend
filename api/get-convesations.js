@@ -81,6 +81,8 @@ module.exports = async (req, res) => {
         }
       } else if (profilePhotoPath) {
         console.log(`ℹ️ Profile photo path for ${techId} is not a Realtime DB path: ${profilePhotoPath}`);
+        // If it's already a URL or data URL, use it directly
+        profileImageUrl = profilePhotoPath;
       }
       
       const technician = {

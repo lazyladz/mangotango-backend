@@ -48,58 +48,102 @@ module.exports = async (req, res) => {
 
     const allTechnicians = [];
     
-    // 🔥 FIXED: Fetch profile images for each technician
-    for (const doc of techniciansSnapshot.docs) {
-      const techData = doc.data();
-      const techId = techData.authUID || doc.id;
-      
-      let profileImageUrl = null;
-      let profilePhotoPath = techData.profilePhoto || '';
-      
-      // If profilePhoto exists and points to Realtime DB, fetch the actual image
-      if (profilePhotoPath && profilePhotoPath.startsWith('technician_images/')) {
-        try {
-          console.log(`🖼️ Fetching profile image for technician ${techId} from path: ${profilePhotoPath}`);
+    // 🔥 IMPROVED: Fetch profile images with better error handling and path resolution
+for (const doc of techniciansSnapshot.docs) {
+  const techData = doc.data();
+  const techId = techData.authUID || doc.id;
+  
+  let profileImageUrl = null;
+  let profilePhotoPath = techData.profilePhoto || '';
+  
+  console.log(`🖼️ Processing technician ${techId}`);
+  console.log(`📁 Profile photo path: ${profilePhotoPath}`);
+
+  // Handle different types of profile photo paths
+  if (profilePhotoPath) {
+    if (profilePhotoPath.startsWith('technician_images/')) {
+      // It's a Realtime Database path - fetch the image data
+      try {
+        console.log(`🔍 Fetching from Realtime DB: ${profilePhotoPath}`);
+        
+        const imageRef = db.ref(profilePhotoPath);
+        const imageSnapshot = await imageRef.once('value');
+        
+        if (imageSnapshot.exists()) {
+          const imageData = imageSnapshot.val();
+          console.log(`📊 Image data found:`, {
+            hasBase64: !!imageData.base64,
+            base64Length: imageData.base64?.length || 0,
+            imageType: imageData.imageType,
+            originalName: imageData.originalName
+          });
           
-          const imageRef = db.ref(profilePhotoPath);
-          const imageSnapshot = await imageRef.once('value');
-          
-          if (imageSnapshot.exists()) {
-            const imageData = imageSnapshot.val();
-            if (imageData.base64) {
-              // ✅ FIXED: Create proper data URL format
-              profileImageUrl = `data:image/jpeg;base64,${imageData.base64}`;
-              console.log(`✅ Successfully loaded profile image for ${techId}`);
-            } else {
-              console.log(`❌ No base64 data found for technician ${techId}`);
-            }
+          if (imageData.base64) {
+            // ✅ Create proper data URL with correct MIME type
+            const mimeType = imageData.imageType || 'image/jpeg';
+            profileImageUrl = `data:${mimeType};base64,${imageData.base64}`;
+            console.log(`✅ Successfully loaded profile image for ${techId}`);
           } else {
-            console.log(`❌ No image data found at path: ${profilePhotoPath}`);
+            console.log(`❌ No base64 data found for technician ${techId}`);
+            
+            // Try alternative data structure
+            if (imageData.data) {
+              profileImageUrl = `data:image/jpeg;base64,${imageData.data}`;
+              console.log(`✅ Found image data in 'data' field for ${techId}`);
+            }
           }
-        } catch (imageError) {
-          console.warn(`⚠️ Failed to fetch profile image for technician ${techId}:`, imageError.message);
+        } else {
+          console.log(`❌ No image data found at path: ${profilePhotoPath}`);
+          
+          // Try alternative path structure
+          const altPath = `technician_images/profiles/${techId}`;
+          console.log(`🔄 Trying alternative path: ${altPath}`);
+          
+          const altImageRef = db.ref(altPath);
+          const altImageSnapshot = await altImageRef.once('value');
+          
+          if (altImageSnapshot.exists()) {
+            const altImageData = altImageSnapshot.val();
+            if (altImageData.base64) {
+              const mimeType = altImageData.imageType || 'image/jpeg';
+              profileImageUrl = `data:${mimeType};base64,${altImageData.base64}`;
+              console.log(`✅ Found image at alternative path for ${techId}`);
+            }
+          }
         }
-      } else if (profilePhotoPath) {
-        console.log(`ℹ️ Profile photo path for ${techId} is not a Realtime DB path: ${profilePhotoPath}`);
-        // If it's already a URL or data URL, use it directly
-        profileImageUrl = profilePhotoPath;
+      } catch (imageError) {
+        console.warn(`⚠️ Failed to fetch profile image for technician ${techId}:`, imageError.message);
       }
+    } else if (profilePhotoPath.startsWith('data:image')) {
+      // It's already a data URL - use it directly
+      profileImageUrl = profilePhotoPath;
+      console.log(`📸 Using existing data URL for ${techId}`);
+    } else if (profilePhotoPath.startsWith('http')) {
+      // It's a regular URL - use it directly
+      profileImageUrl = profilePhotoPath;
+      console.log(`🌐 Using HTTP URL for ${techId}`);
+    } else {
+      console.log(`⚠️ Unknown profile photo format for ${techId}: ${profilePhotoPath}`);
+    }
+  } else {
+    console.log(`🚫 No profile photo path for ${techId}`);
+  }
       
       const technician = {
-        id: doc.id,
-        authUID: techId,
-        firstName: techData.firstName || '',
-        lastName: techData.lastName || '',
-        department: techData.department || '',
-        address: techData.address || '',
-        profilePhoto: profileImageUrl, // Now contains proper image data URL or null
-        profilePhotoPath: profilePhotoPath, // Keep original path for reference
-        expertise: techData.expertise || '',
-        role: techData.role || 'technician',
-        status: techData.status || 'Approved'
-      };
-      allTechnicians.push(technician);
-    }
+    id: doc.id,
+    authUID: techId,
+    firstName: techData.firstName || '',
+    lastName: techData.lastName || '',
+    department: techData.department || '',
+    address: techData.address || '',
+    profilePhoto: profileImageUrl,
+    profilePhotoPath: profilePhotoPath,
+    expertise: techData.expertise || '',
+    role: techData.role || 'technician',
+    status: techData.status || 'Approved'
+  };
+  allTechnicians.push(technician);
+}
 
     console.log('GET_CONVERSATIONS: Found', allTechnicians.length, 'approved technicians');
 

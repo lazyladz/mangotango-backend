@@ -13,6 +13,24 @@ if (!admin.apps.length) {
 
 const db = admin.database();
 
+// Helper function to extract technicianId from conversationId
+function extractTechnicianIdFromConversation(conversationId, senderId) {
+  if (!conversationId || !senderId) return '';
+  
+  console.log(`🔄 Extracting technicianId from conversation: ${conversationId}, sender: ${senderId}`);
+  
+  const parts = conversationId.split('_');
+  if (parts.length === 2) {
+    // Return the part that is NOT the sender
+    const technicianId = parts[0] === senderId ? parts[1] : parts[0];
+    console.log(`✅ Extracted technicianId: ${technicianId}`);
+    return technicianId;
+  }
+  
+  console.log('❌ Could not extract technicianId from conversation');
+  return '';
+}
+
 module.exports = async (req, res) => {
   // 🔥 COMPLETE CORS HEADERS
   res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -37,14 +55,14 @@ module.exports = async (req, res) => {
       message,
       recipientId,
       senderId,
-      technicianId  // ✅ Make sure this is included
+      technicianId  // This might be undefined initially
     } = req.body;
 
     // ✅ ADD DEBUG LOGGING HERE
     console.log('📨 PUSH NOTIFICATION REQUEST RECEIVED:');
     console.log('   - conversationId:', conversationId);
     console.log('   - technicianName:', technicianName);
-    console.log('   - technicianId:', technicianId);  // This might be undefined!
+    console.log('   - technicianId (from request):', technicianId);
     console.log('   - message:', message);
     console.log('   - recipientId:', recipientId);
     console.log('   - senderId:', senderId);
@@ -56,8 +74,12 @@ module.exports = async (req, res) => {
       });
     }
 
+    // ✅ FIX: Extract technicianId if not provided
+    const finalTechnicianId = technicianId || extractTechnicianIdFromConversation(conversationId, senderId);
+    
     console.log(`📤 Sending FCM to: ${recipientId}`);
     console.log(`👨‍💻 From: ${technicianName}`);
+    console.log(`🆔 Using technicianId: ${finalTechnicianId}`);
     console.log(`💬 Message: ${message.substring(0, 50)}...`);
 
     // 1. Get recipient's FCM token
@@ -86,7 +108,7 @@ module.exports = async (req, res) => {
       data: {
         type: 'message',
         technicianName: technicianName,
-        technicianId: technicianId || '', // ✅ Make sure this is included
+        technicianId: finalTechnicianId, // ✅ Now this will always have a value
         conversationId: conversationId,
         message: message,
         senderId: senderId || 'unknown',
@@ -124,7 +146,8 @@ module.exports = async (req, res) => {
       success: true,
       message: 'Push notification sent successfully',
       messageId: response,
-      recipientId: recipientId
+      recipientId: recipientId,
+      technicianId: finalTechnicianId
     });
 
   } catch (error) {

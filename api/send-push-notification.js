@@ -67,35 +67,38 @@ module.exports = async (req, res) => {
     console.log(`✅ Found FCM token for: ${recipientId}`);
 
     // 2. Prepare FCM message
-    const messagePayload = {
-      token: recipientToken,
-      notification: {
-        title: `💬 ${technicianName}`,
-        body: message
-      },
-      data: {
-        type: 'message',
-        technicianName: technicianName,
-        message: message,
-        conversationId: conversationId,
-        senderId: senderId || 'unknown'
-      },
-      android: {
-        priority: 'high'
-      },
-      apns: {
-        payload: {
-          aps: {
-            alert: {
-              title: `💬 ${technicianName}`,
-              body: message
-            },
-            sound: 'default',
-            badge: 1
-          }
-        }
+const messagePayload = {
+  token: recipientToken,
+  notification: {
+    title: `💬 ${technicianName}`,
+    body: message
+  },
+  data: {
+    type: 'message',
+    technicianName: technicianName,
+    // ✅ ADD THESE MISSING FIELDS:
+    technicianId: req.body.technicianId || '', // CRITICAL - Add this!
+    conversationId: conversationId,
+    message: message,
+    senderId: senderId || 'unknown',
+    from_fcm: 'true' // Add this flag too
+  },
+  android: {
+    priority: 'high'
+  },
+  apns: {
+    payload: {
+      aps: {
+        alert: {
+          title: `💬 ${technicianName}`,
+          body: message
+        },
+        sound: 'default',
+        badge: 1
       }
-    };
+    }
+  }
+};
 
     // 3. Send via FCM
     const response = await admin.messaging().send(messagePayload);

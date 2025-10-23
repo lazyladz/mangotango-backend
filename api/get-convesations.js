@@ -49,6 +49,7 @@ module.exports = async (req, res) => {
     const allTechnicians = [];
     
     // 🔥 IMPROVED: Fetch profile images with better error handling and path resolution
+// 🔥 FIXED: Handle double-encoded data URLs
 for (const doc of techniciansSnapshot.docs) {
   const techData = doc.data();
   const techId = techData.authUID || doc.id;
@@ -71,45 +72,54 @@ for (const doc of techniciansSnapshot.docs) {
         
         if (imageSnapshot.exists()) {
           const imageData = imageSnapshot.val();
-          console.log(`📊 Image data found:`, {
+          console.log(`📊 Image data found for ${techId}:`, {
             hasBase64: !!imageData.base64,
-            base64Length: imageData.base64?.length || 0,
+            base64Prefix: imageData.base64 ? imageData.base64.substring(0, 50) + '...' : 'none',
             imageType: imageData.imageType,
+            mimeType: imageData.mimeType,
             originalName: imageData.originalName
           });
           
           if (imageData.base64) {
-            // ✅ Create proper data URL with correct MIME type
-            const mimeType = imageData.imageType || 'image/jpeg';
-            profileImageUrl = `data:${mimeType};base64,${imageData.base64}`;
-            console.log(`✅ Successfully loaded profile image for ${techId}`);
+            // ✅ FIX: Handle double-encoded data URLs
+            let base64Data = imageData.base64;
+            
+            // Check if it's double-encoded (contains "data:image" inside)
+            if (base64Data.includes('data:image')) {
+              console.log(`🔄 Detected double-encoded data URL for ${techId}`);
+              
+              // Extract the inner data URL
+              const innerDataUrlMatch = base64Data.match(/data:image\/[^;]+;base64,[^,]+/);
+              if (innerDataUrlMatch) {
+                profileImageUrl = innerDataUrlMatch[0];
+                console.log(`✅ Extracted inner data URL for ${techId}`);
+              } else {
+                // Fallback: try to extract just the base64 part
+                const base64Match = base64Data.match(/base64,([^,]+)/);
+                if (base64Match && base64Match[1]) {
+                  const mimeType = imageData.mimeType || 'image/jpeg';
+                  profileImageUrl = `data:${mimeType};base64,${base64Match[1]}`;
+                  console.log(`✅ Reconstructed data URL from base64 for ${techId}`);
+                } else {
+                  console.log(`❌ Could not extract valid image data from double-encoded URL`);
+                  profileImageUrl = base64Data; // Use as-is as last resort
+                }
+              }
+            } else if (base64Data.startsWith('data:')) {
+              // It's already a proper data URL
+              profileImageUrl = base64Data;
+              console.log(`✅ Using existing data URL for ${techId}`);
+            } else {
+              // It's just base64 data - create proper data URL
+              const mimeType = imageData.mimeType || imageData.imageType || 'image/jpeg';
+              profileImageUrl = `data:${mimeType};base64,${base64Data}`;
+              console.log(`✅ Created data URL from base64 data for ${techId}`);
+            }
           } else {
             console.log(`❌ No base64 data found for technician ${techId}`);
-            
-            // Try alternative data structure
-            if (imageData.data) {
-              profileImageUrl = `data:image/jpeg;base64,${imageData.data}`;
-              console.log(`✅ Found image data in 'data' field for ${techId}`);
-            }
           }
         } else {
           console.log(`❌ No image data found at path: ${profilePhotoPath}`);
-          
-          // Try alternative path structure
-          const altPath = `technician_images/profiles/${techId}`;
-          console.log(`🔄 Trying alternative path: ${altPath}`);
-          
-          const altImageRef = db.ref(altPath);
-          const altImageSnapshot = await altImageRef.once('value');
-          
-          if (altImageSnapshot.exists()) {
-            const altImageData = altImageSnapshot.val();
-            if (altImageData.base64) {
-              const mimeType = altImageData.imageType || 'image/jpeg';
-              profileImageUrl = `data:${mimeType};base64,${altImageData.base64}`;
-              console.log(`✅ Found image at alternative path for ${techId}`);
-            }
-          }
         }
       } catch (imageError) {
         console.warn(`⚠️ Failed to fetch profile image for technician ${techId}:`, imageError.message);
@@ -117,7 +127,7 @@ for (const doc of techniciansSnapshot.docs) {
     } else if (profilePhotoPath.startsWith('data:image')) {
       // It's already a data URL - use it directly
       profileImageUrl = profilePhotoPath;
-      console.log(`📸 Using existing data URL for ${techId}`);
+      console.log(`📸 Using existing data URL from profilePhoto for ${techId}`);
     } else if (profilePhotoPath.startsWith('http')) {
       // It's a regular URL - use it directly
       profileImageUrl = profilePhotoPath;
@@ -128,7 +138,6 @@ for (const doc of techniciansSnapshot.docs) {
   } else {
     console.log(`🚫 No profile photo path for ${techId}`);
   }
-      
       const technician = {
     id: doc.id,
     authUID: techId,

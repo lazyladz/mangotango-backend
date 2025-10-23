@@ -36,8 +36,18 @@ module.exports = async (req, res) => {
       technicianName, 
       message,
       recipientId,
-      senderId 
+      senderId,
+      technicianId  // ✅ Make sure this is included
     } = req.body;
+
+    // ✅ ADD DEBUG LOGGING HERE
+    console.log('📨 PUSH NOTIFICATION REQUEST RECEIVED:');
+    console.log('   - conversationId:', conversationId);
+    console.log('   - technicianName:', technicianName);
+    console.log('   - technicianId:', technicianId);  // This might be undefined!
+    console.log('   - message:', message);
+    console.log('   - recipientId:', recipientId);
+    console.log('   - senderId:', senderId);
 
     if (!conversationId || !technicianName || !message || !recipientId) {
       return res.status(400).json({ 
@@ -67,38 +77,42 @@ module.exports = async (req, res) => {
     console.log(`✅ Found FCM token for: ${recipientId}`);
 
     // 2. Prepare FCM message
-const messagePayload = {
-  token: recipientToken,
-  notification: {
-    title: `💬 ${technicianName}`,
-    body: message
-  },
-  data: {
-    type: 'message',
-    technicianName: technicianName,
-    // ✅ ADD THESE MISSING FIELDS:
-    technicianId: req.body.technicianId || '', // CRITICAL - Add this!
-    conversationId: conversationId,
-    message: message,
-    senderId: senderId || 'unknown',
-    from_fcm: 'true' // Add this flag too
-  },
-  android: {
-    priority: 'high'
-  },
-  apns: {
-    payload: {
-      aps: {
-        alert: {
-          title: `💬 ${technicianName}`,
-          body: message
-        },
-        sound: 'default',
-        badge: 1
+    const messagePayload = {
+      token: recipientToken,
+      notification: {
+        title: `💬 ${technicianName}`,
+        body: message
+      },
+      data: {
+        type: 'message',
+        technicianName: technicianName,
+        technicianId: technicianId || '', // ✅ Make sure this is included
+        conversationId: conversationId,
+        message: message,
+        senderId: senderId || 'unknown',
+        from_fcm: 'true'
+      },
+      android: {
+        priority: 'high'
+      },
+      apns: {
+        payload: {
+          aps: {
+            alert: {
+              title: `💬 ${technicianName}`,
+              body: message
+            },
+            sound: 'default',
+            badge: 1
+          }
+        }
       }
-    }
-  }
-};
+    };
+
+    // ✅ ADD DEBUG LOGGING BEFORE SENDING FCM
+    console.log('🚀 SENDING FCM MESSAGE:');
+    console.log('   - Token:', recipientToken ? `${recipientToken.substring(0, 20)}...` : 'MISSING');
+    console.log('   - FCM Payload:', JSON.stringify(messagePayload, null, 2));
 
     // 3. Send via FCM
     const response = await admin.messaging().send(messagePayload);

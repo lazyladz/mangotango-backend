@@ -117,10 +117,32 @@ async function handleLogin(requestData, res) {
 
     if (!authResult.idToken) {
       console.log('AUTH_API: Login failed -', authResult.error?.message);
-      return res.status(401).json({
-        success: false,
-        message: 'Login failed: ' + (authResult.error?.message || 'Invalid credentials')
-      });
+      
+      // Check if email exists first
+      try {
+        // Try to get user by email to see if email exists
+        const userRecord = await auth.getUserByEmail(email);
+        
+        // If we reach here, email exists but password is wrong
+        return res.status(401).json({
+          success: false,
+          message: 'wrong_password'
+        });
+      } catch (emailError) {
+        // Email doesn't exist in Firebase Auth
+        if (emailError.code === 'auth/user-not-found') {
+          return res.status(401).json({
+            success: false,
+            message: 'email_not_found'
+          });
+        }
+        
+        // Some other error occurred
+        return res.status(401).json({
+          success: false,
+          message: 'Login failed: ' + (authResult.error?.message || 'Invalid credentials')
+        });
+      }
     }
 
     const userId = authResult.localId;

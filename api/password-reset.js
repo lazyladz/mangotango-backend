@@ -102,6 +102,9 @@ async function handleSendEmail(data) {
 
   console.log('DEBUG_SEND_EMAIL: Received data:', { email, username, code });
 
+  console.log('DEBUG_SEND_EMAIL: GMAIL_EMAIL from env:', process.env.GMAIL_EMAIL);
+  console.log('DEBUG_SEND_EMAIL: GMAIL_PASSWORD exists:', !!process.env.GMAIL_PASSWORD);
+
   if (!email || !code) {
     return {
       success: false,

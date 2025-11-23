@@ -96,7 +96,6 @@ module.exports = async (req, res) => {
   }
 };
 
-// Send Email Function
 async function handleSendEmail(data) {
   const { email, username, code } = data;
 
@@ -109,29 +108,57 @@ async function handleSendEmail(data) {
     };
   }
 
+  // Use SendGrid SMTP
   const transporter = nodemailer.createTransport({
-    service: 'gmail',
+    host: 'smtp.sendgrid.net',
+    port: 587,
+    secure: false,
     auth: {
-      user: process.env.GMAIL_EMAIL,
-      pass: process.env.GMAIL_PASSWORD,
+      user: 'apikey', // Literally the word 'apikey'
+      pass: process.env.SENDGRID_API_KEY, // Your SendGrid API key
     },
   });
 
   const mailOptions = {
-    from: `MangoTango App <${process.env.GMAIL_EMAIL}>`,
+    from: 'MangoTango App <noreply@mangotango.com>',
     to: email,
     subject: 'Password Reset Verification Code - MangoTango',
-    html: `Your verification code is: <strong>${code}</strong>`
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #ff6b00;">MangoTango Password Reset</h2>
+        <p>Hello ${username},</p>
+        <p>You requested a password reset for your MangoTango account.</p>
+        <div style="background: #f4f4f4; padding: 15px; border-radius: 5px; text-align: center; margin: 20px 0;">
+          <h3 style="margin: 0; color: #333;">Your Verification Code:</h3>
+          <div style="font-size: 32px; font-weight: bold; color: #ff6b00; letter-spacing: 5px; margin: 10px 0;">
+            ${code}
+          </div>
+        </div>
+        <p><strong>This code will expire in 10 minutes.</strong></p>
+        <p>If you didn't request this reset, please ignore this email.</p>
+        <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+        <p style="color: #666; font-size: 12px;">MangoTango Team</p>
+      </div>
+    `
   };
 
-  await transporter.sendMail(mailOptions);
-  
-  return {
-    success: true,
-    message: 'Verification code sent successfully'
-  };
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log('DEBUG_SEND_EMAIL: Email sent successfully via SendGrid');
+    
+    return {
+      success: true,
+      message: 'Verification code sent successfully'
+    };
+  } catch (emailError) {
+    console.error('DEBUG_SEND_EMAIL: SendGrid error:', emailError);
+    return {
+      success: false,
+      message: 'Failed to send email',
+      error: emailError.message
+    };
+  }
 }
-
 // Verify Code Function
 async function handleVerifyCode(data) {
   const { userId, code } = data;

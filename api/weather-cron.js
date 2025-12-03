@@ -51,59 +51,43 @@ async function debugTokenStorage() {
     }
 }
 
-// ==================== ACTIVE USER CHECK FUNCTION ====================
 async function shouldSendWeatherToUser(userId) {
     try {
-        console.log(`🔍 Checking user activity: ${userId.substring(0, 8)}...`);
+        console.log(`🔍 Checking user: ${userId.substring(0, 8)}...`);
         
-        // 1. Check if user exists
-        const userRef = db.ref(`users/${userId}`);
-        const userSnapshot = await userRef.once('value');
-        const userData = userSnapshot.val();
-        
-        if (!userData) {
-            console.log(`   ❌ User not found in database`);
-            return false;
-        }
-        
-        // 2. Check if user has a selected city (not Manila/default)
-        const userCity = userData.preferredCity;
-        if (!userCity || userCity === 'Manila' || userCity === '') {
-            console.log(`   📍 No city selected or default city (${userCity})`);
-            return false;
-        }
-        
-        // 3. Check FCM token existence and age
+        // 1. Check if user has FCM token in database
+        // If logout removed it, this check fails immediately
         const tokenRef = db.ref(`user_tokens/${userId}`);
         const tokenSnapshot = await tokenRef.once('value');
         const tokenData = tokenSnapshot.val();
         
         if (!tokenData || !tokenData.fcmToken) {
-            console.log(`   📱 No FCM token found`);
+            console.log(`   ❌ No FCM token (user logged out or never saved)`);
             return false;
         }
         
-        // 4. Check token age (handle missing updatedAt)
-        const tokenTimestamp = tokenData.updatedAt || tokenData.timestamp || 0;
-        const tokenAge = Date.now() - tokenTimestamp;
-        const TWO_HOURS = 2 * 60 * 60 * 1000;
+        // 2. Check if user exists and has city
+        const userRef = db.ref(`users/${userId}`);
+        const userSnapshot = await userRef.once('value');
+        const userData = userSnapshot.val();
         
-        if (tokenAge > TWO_HOURS) {
-            console.log(`   ⏰ Token too old (${Math.round(tokenAge/1000/60)} minutes)`);
-            
-            // Auto-cleanup: Remove very old tokens (>24 hours)
-            if (tokenAge > 24 * 60 * 60 * 1000) { // 24 hours
-                await tokenRef.remove();
-                console.log(`   🗑️ Removed old token (${Math.round(tokenAge/1000/60/60)} hours old)`);
-            }
+        if (!userData) {
+            console.log(`   ❌ User not found`);
             return false;
         }
         
-        console.log(`   ✅ Active user (token updated ${Math.round(tokenAge/1000/60)} minutes ago)`);
+        const userCity = userData.preferredCity;
+        
+        if (!userCity || userCity === "undefined" || userCity === "null" || userCity.trim() === "") {
+            console.log(`   ❌ Invalid city: "${userCity}"`);
+            return false;
+        }
+        
+        console.log(`   ✅ User ${userId.substring(0, 8)}... gets weather for ${userCity}`);
         return true;
         
     } catch (error) {
-        console.error(`   ❌ Error checking user ${userId}:`, error.message);
+        console.error(`   ❌ Error:`, error.message);
         return false;
     }
 }

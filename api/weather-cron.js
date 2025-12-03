@@ -53,6 +53,31 @@ function getFarmingAdvice(temp, condition, humidity, windSpeed) {
     return advice.length > 0 ? advice.join(' ') : 'Normal farming activities.';
 }
 
+function createNotificationSummary(temp, condition, pests, advice) {
+    // Create a compact summary for notification
+    let summary = `${temp}°C | ${condition}`;
+    
+    if (pests.length > 0) {
+        // Add pest indicator
+        summary += ` | ⚠️ ${pests.length} pest${pests.length > 1 ? 's' : ''}`;
+    } else {
+        summary += ` | ✅ No pests`;
+    }
+    
+    // Add first advice
+    const firstAdvice = advice.split('.')[0];
+    if (firstAdvice !== 'Normal farming activities') {
+        summary += ` | ${firstAdvice}`;
+    }
+    
+    // Limit length
+    if (summary.length > 100) {
+        summary = summary.substring(0, 97) + '...';
+    }
+    
+    return summary;
+}
+
 async function fetchWeatherForCity(city) {
     try {
         const WEATHER_API_KEY = process.env.WEATHER_API_KEY || 'fbc049c0ab6883e70eb66f800322b567';
@@ -68,6 +93,7 @@ async function fetchWeatherForCity(city) {
         const windSpeed = data.wind.speed;
         
         const pests = getPestAlerts(temp, condition, humidity, windSpeed);
+        const advice = getFarmingAdvice(temp, condition, humidity, windSpeed);
         
         return {
             city,
@@ -76,6 +102,7 @@ async function fetchWeatherForCity(city) {
             humidity,
             windSpeed: Math.round(windSpeed * 10) / 10,
             pests,
+            advice,
             timestamp: new Date().toISOString(),
             fetchedAt: new Date().toLocaleTimeString('en-PH', {
                 hour: '2-digit',
@@ -104,28 +131,31 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
             return false;
         }
         
-        const { temp, condition, humidity, windSpeed, pests, fetchedAt } = weatherData;
+        const { temp, condition, humidity, windSpeed, pests, advice, fetchedAt } = weatherData;
         
         // Create notification message
         const title = isTest 
             ? `🧪 Weather Test: ${city}` 
             : `🌤️ Weather Update: ${city}`;
         
+        // Create detailed message
         const weatherMessage = `🌡️ ${temp}°C | ${condition}\n💧 ${humidity}% | 💨 ${windSpeed}m/s\n⏰ ${fetchedAt}`;
         
         const pestMessage = pests.length > 0 
             ? `\n\n⚠️ Pest Alert:\n${pests.map(p => `• ${p}`).join('\n')}`
             : '\n\n✅ No major pest threats';
         
-        const advice = getFarmingAdvice(temp, condition, humidity, windSpeed);
         const fullMessage = `${weatherMessage}${pestMessage}\n\n💡 ${advice}`;
         
-        // Prepare FCM message
+        // Create notification summary (what shows on screen)
+        const notificationBody = createNotificationSummary(temp, condition, pests, advice);
+        
+        // Prepare FCM message with expanded details
         const messagePayload = {
             token: tokenData.fcmToken,
             notification: {
                 title: title,
-                body: `${temp}°C | ${condition}`
+                body: notificationBody  // Shows: "30°C | Cloudy | ⚠️ 2 pests | Water plants early morning"
             },
             data: {
                 type: 'weather',
@@ -135,20 +165,50 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
                 humidity: humidity.toString(),
                 wind_speed: windSpeed.toString(),
                 pests: JSON.stringify(pests),
+                advice: advice,
                 timestamp: new Date().toISOString(),
-                message: fullMessage,
+                message: fullMessage,  // Full detailed message
                 test: isTest.toString(),
-                source: 'github-actions-cron'
+                source: 'github-actions-cron',
+                expanded_details: 'true'
             },
             android: {
                 priority: 'high',
                 notification: {
-                    channelId: 'weather_alerts'
+                    channelId: 'weather_alerts',
+                    style: 'bigText',
+                    bigText: fullMessage,  // Shows when expanded
+                    summaryText: `${temp}°C | ${condition}`,
+                    sound: 'default',
+                    icon: 'ic_notification',
+                    color: '#4CAF50'
+                }
+            },
+            apns: {
+                payload: {
+                    aps: {
+                        alert: {
+                            title: title,
+                            body: notificationBody
+                        },
+                        sound: 'default',
+                        badge: 1
+                    }
+                }
+            },
+            webpush: {
+                notification: {
+                    title: title,
+                    body: notificationBody,
+                    icon: 'https://your-app.com/icon.png'
                 }
             }
         };
         
         console.log(`🚀 Sending FCM to ${userId}`);
+        console.log(`📱 Notification: ${notificationBody}`);
+        console.log(`📄 Full message: ${fullMessage.substring(0, 100)}...`);
+        
         const response = await admin.messaging().send(messagePayload);
         console.log(`✅ Sent: ${response}`);
         
@@ -194,16 +254,20 @@ async function handleCronJob() {
         let successCount = 0;
         let failCount = 0;
         const results = [];
-        
-        // Limit to first 10 users for testing (remove this later)
-        const userEntries = Object.entries(users).slice(0, 10);
+        const userEntries = Object.entries(users);
         
         for (const [userId, userData] of userEntries) {
             if (!userData) continue;
             
             try {
-                // Get user's preferred city, default to Manila
-                const userCity = userData.preferredCity || 'Manila';
+                // Get user's preferred city from Firebase
+                let userCity = userData.preferredCity;
+                
+                // FIX: Don't default to Manila if user hasn't selected a city
+                if (!userCity || userCity === 'Manila') {
+                    console.log(`  ⚠️ User ${userId.substring(0, 8)}... hasn't selected a city, skipping`);
+                    continue;  // Skip users who haven't selected a city
+                }
                 
                 console.log(`  👤 Processing: ${userId.substring(0, 8)}..., City: ${userCity}`);
                 
@@ -225,9 +289,11 @@ async function handleCronJob() {
                         userId: userId.substring(0, 8) + '...', 
                         city: userCity,
                         temp: weatherData.temp,
-                        condition: weatherData.condition
+                        condition: weatherData.condition,
+                        pests: weatherData.pests.length,
+                        advice: weatherData.advice.substring(0, 30) + '...'
                     });
-                    console.log(`  ✅ Sent weather for ${userCity}`);
+                    console.log(`  ✅ Sent weather for ${userCity} (${weatherData.temp}°C, ${weatherData.pests.length} pests)`);
                 } else {
                     failCount++;
                     console.log(`  ❌ Failed to send to ${userId}`);
@@ -244,10 +310,11 @@ async function handleCronJob() {
         
         const summary = {
             totalUsers: userCount,
-            processed: userEntries.length,
+            usersWithCity: userEntries.filter(([_, data]) => data.preferredCity && data.preferredCity !== 'Manila').length,
+            processed: successCount + failCount,
             successful: successCount,
             failed: failCount,
-            successRate: Math.round((successCount / userEntries.length) * 100) || 0,
+            successRate: userCount > 0 ? Math.round((successCount / userCount) * 100) : 0,
             timestamp: new Date().toISOString(),
             nextRun: 'in 5 minutes via GitHub Actions'
         };
@@ -258,7 +325,7 @@ async function handleCronJob() {
             success: true,
             summary,
             results: results.slice(0, 5),
-            message: `Processed ${userEntries.length} users, ${successCount} successful`
+            message: `Processed ${successCount + failCount} users with selected cities, ${successCount} successful`
         };
         
     } catch (error) {
@@ -286,7 +353,12 @@ async function handleManualTest(userId, city = 'Manila') {
         success,
         city,
         weather: weatherData,
-        message: success ? 'Test notification sent' : 'Failed to send test'
+        notification: {
+            title: `🧪 Weather Test: ${city}`,
+            body: createNotificationSummary(weatherData.temp, weatherData.condition, weatherData.pests, weatherData.advice),
+            details: `🌡️ ${weatherData.temp}°C | ${weatherData.condition}\n💧 ${weatherData.humidity}% | 💨 ${weatherData.windSpeed}m/s\n⏰ ${weatherData.fetchedAt}\n\n⚠️ Pests: ${weatherData.pests.length > 0 ? weatherData.pests.join(', ') : 'None'}\n💡 Advice: ${weatherData.advice}`
+        },
+        message: success ? 'Test notification sent successfully with pest alerts and advice' : 'Failed to send test'
     };
 }
 
@@ -303,7 +375,8 @@ async function handleQuickTest(city = 'Manila') {
         success: true,
         city,
         weather: weatherData,
-        message: 'Weather data fetched'
+        notification_preview: createNotificationSummary(weatherData.temp, weatherData.condition, weatherData.pests, weatherData.advice),
+        message: 'Weather data fetched with pest analysis'
     };
 }
 
@@ -359,6 +432,15 @@ module.exports = async (req, res) => {
                 return res.status(200).json(quickResult);
                 
             case 'status':
+                // Check database for user cities
+                const usersRef = db.ref('users');
+                const usersSnapshot = await usersRef.once('value');
+                const users = usersSnapshot.val() || {};
+                
+                const usersWithCity = Object.values(users).filter(user => 
+                    user.preferredCity && user.preferredCity !== 'Manila'
+                ).length;
+                
                 return res.status(200).json({
                     service: 'MangoTango Weather Cron',
                     status: 'running',
@@ -366,9 +448,14 @@ module.exports = async (req, res) => {
                     firebase: admin.apps.length > 0 ? 'connected' : 'disconnected',
                     scheduler: 'GitHub Actions',
                     schedule: 'Every 5 minutes',
+                    stats: {
+                        totalUsers: Object.keys(users).length,
+                        usersWithSelectedCity: usersWithCity,
+                        usersDefaultManila: Object.keys(users).length - usersWithCity
+                    },
                     endpoints: [
-                        { action: 'test', method: 'POST', desc: 'Send test notification' },
-                        { action: 'quick-test', method: 'POST', desc: 'Fetch weather only' },
+                        { action: 'test', method: 'POST', desc: 'Send test notification with pests & advice' },
+                        { action: 'quick-test', method: 'POST', desc: 'Fetch weather with pest analysis' },
                         { action: 'cron-simulate', method: 'POST', desc: 'Trigger cron (requires secret)' }
                     ]
                 });
@@ -379,15 +466,23 @@ module.exports = async (req, res) => {
                     return res.status(200).json({
                         service: 'MangoTango Weather Cron',
                         status: 'active',
+                        features: [
+                            'Personalized city weather',
+                            'Pest alerts based on conditions',
+                            'Farming advice',
+                            'Expanded notification details',
+                            'Skips users without selected city'
+                        ],
                         timestamp: new Date().toISOString(),
                         note: 'This endpoint is triggered by GitHub Actions every 5 minutes',
-                        manual_test: 'curl -X POST https://mangotango-backend.vercel.app/api/weather-cron -d \'{"action":"test","userId":"YOUR_USER_ID"}\''
+                        manual_test: 'curl -X POST https://mangotango-backend.vercel.app/api/weather-cron -d \'{"action":"test","userId":"YOUR_USER_ID","city":"Manila"}\''
                     });
                 }
                 
                 return res.status(200).json({
                     message: 'Weather cron service is running',
                     next_cron: 'Triggered by GitHub Actions every 5 minutes',
+                    features: 'Now includes pest alerts and farming advice in notifications',
                     timestamp: new Date().toISOString()
                 });
         }

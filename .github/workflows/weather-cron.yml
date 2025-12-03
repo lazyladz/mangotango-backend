@@ -1,83 +1,140 @@
-name: 🕒 Weather Cron Job
+name: 🌤️ MangoTango Weather Updates
 on:
+  # Runs every 5 minutes exactly
   schedule:
-    # Runs every 5 minutes
     - cron: '*/5 * * * *'
-  # Allows manual triggering from GitHub UI
+  
+  # Allow manual trigger from GitHub UI
   workflow_dispatch:
     inputs:
-      log_level:
-        description: 'Log level'
-        required: true
-        default: 'info'
-        type: choice
-        options:
-          - info
-          - debug
-      city:
-        description: 'Test with specific city'
+      test_mode:
+        description: 'Test mode'
         required: false
-        type: string
+        default: 'false'
+        type: boolean
+
+# Prevent multiple concurrent runs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  trigger-weather-cron:
-    name: 🌤️ Trigger Weather Updates
+  trigger-weather-notifications:
+    name: Send Weather Alerts to Users
     runs-on: ubuntu-latest
     timeout-minutes: 5
     
     steps:
-      - name: 📋 Start Cron Job
-        run: echo "🕒 Starting weather cron job at $(date)"
-        
+      - name: 🏁 Start Cron Job
+        run: |
+          echo "========================================"
+          echo "🕒 MangoTango Weather Cron Started"
+          echo "========================================"
+          echo "Time: $(date)"
+          echo "Trigger: ${{ github.event_name }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "========================================"
+      
+      - name: 🔐 Load Secrets
+        run: |
+          echo "Loading cron secrets..."
+          if [ -z "${{ secrets.CRON_SECRET }}" ]; then
+            echo "❌ ERROR: CRON_SECRET is not set!"
+            echo "Go to: Settings → Secrets → Actions"
+            exit 1
+          else
+            echo "✅ CRON_SECRET is configured"
+          fi
+      
       - name: 🌐 Call Weather API
         id: call-api
         run: |
-          echo "🔗 Calling Vercel API endpoint..."
+          echo "🌐 Calling Vercel API endpoint..."
           
-          # The API URL - use your Vercel app URL
+          # Your Vercel endpoint URL
           API_URL="https://mangotango-backend.vercel.app/api/weather-cron"
           
-          # Create the request body
-          REQUEST_BODY=$(cat << EOF
+          # Create JSON payload
+          JSON_PAYLOAD=$(cat << EOF
           {
             "action": "cron-simulate",
-            "secret": "${{ secrets.CRON_SECRET }}"
+            "secret": "${{ secrets.CRON_SECRET }}",
+            "source": "github-actions",
+            "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           }
           EOF
           )
           
-          echo "📤 Sending request to: $API_URL"
+          echo "📤 API URL: $API_URL"
+          echo "📦 Payload: $JSON_PAYLOAD"
           
-          # Make the API call
-          response=$(curl -s -w "\n%{http_code}" -X POST "$API_URL" \
+          # Make the API call with timeout
+          echo "🚀 Sending request..."
+          response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "$API_URL" \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            -d "$REQUEST_BODY")
+            -H "User-Agent: GitHub-Actions-Weather-Cron/1.0" \
+            -d "$JSON_PAYLOAD" \
+            --max-time 30)
           
-          # Split response body and status code
-          http_code=$(echo "$response" | tail -n1)
-          response_body=$(echo "$response" | sed '$d')
+          # Extract HTTP status
+          http_status=$(echo "$response" | grep HTTP_STATUS: | cut -d: -f2)
+          response_body=$(echo "$response" | sed '/HTTP_STATUS:/d')
           
-          echo "📥 Response Code: $http_code"
-          echo "📦 Response Body:"
+          echo "📥 HTTP Status: $http_status"
+          echo "📄 Response:"
           echo "$response_body" | jq '.' 2>/dev/null || echo "$response_body"
           
-          # Check if successful
-          if [[ "$http_code" == "200" ]]; then
-            echo "✅ Cron job triggered successfully!"
-            echo "success=true" >> $GITHUB_OUTPUT
-          else
-            echo "❌ Failed to trigger cron job"
-            echo "success=false" >> $GITHUB_OUTPUT
+          # Save response for next steps
+          echo "response_body<<EOF" >> $GITHUB_OUTPUT
+          echo "$response_body" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "http_status=$http_status" >> $GITHUB_OUTPUT
+          
+          # Exit if failed
+          if [ "$http_status" != "200" ]; then
+            echo "❌ API call failed with status: $http_status"
             exit 1
           fi
           
-      - name: 📊 Log Results
+          echo "✅ API call successful!"
+      
+      - name: 📊 Process Results
+        if: success()
+        run: |
+          echo "========================================"
+          echo "📊 CRON JOB RESULTS"
+          echo "========================================"
+          echo "✅ Weather notifications triggered successfully"
+          echo "🕒 Next run: In 5 minutes"
+          echo "📈 Check Firebase for sent notifications"
+          echo "========================================"
+      
+      - name: 🐛 Debug Info (On Failure)
+        if: failure()
+        run: |
+          echo "========================================"
+          echo "❌ CRON JOB FAILED"
+          echo "========================================"
+          echo "Debug information:"
+          echo "Event: ${{ github.event_name }}"
+          echo "Workflow: ${{ github.workflow }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo ""
+          echo "Troubleshooting steps:"
+          echo "1. Check if Vercel endpoint is accessible"
+          echo "2. Verify CRON_SECRET matches in GitHub and Vercel"
+          echo "3. Check Vercel function logs"
+          echo "4. Test manually: curl -X POST https://mangotango-backend.vercel.app/api/weather-cron -d '{\"action\":\"cron-simulate\",\"secret\":\"YOUR_SECRET\"}'"
+          echo "========================================"
+      
+      - name: ✅ Final Status
         if: always()
         run: |
-          echo "🏁 Cron job completed at $(date)"
-          echo "📊 Job Summary:"
-          echo "- Trigger: ${{ github.event_name }}"
-          echo "- Repository: ${{ github.repository }}"
-          echo "- Run ID: ${{ github.run_id }}"
-          echo "- Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "========================================"
+          echo "🏁 Job completed: ${{ job.status }}"
+          echo "🕒 Completion time: $(date)"
+          echo "⏱️ Duration: ${{ job.container.duration }}"
+          echo "📋 Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "========================================"

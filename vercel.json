@@ -1,16 +1,10 @@
 {
   "functions": {
     "api/weather-cron.js": {
-      "maxDuration": 60,
+      "maxDuration": 30,
       "memory": 1024
     }
   },
-  "crons": [
-    {
-      "path": "/api/weather-cron",
-      "schedule": "*/5 * * * *"
-    }
-  ],
   "headers": [
     {
       "source": "/api/(.*)",
@@ -25,7 +19,7 @@
         },
         {
           "key": "Access-Control-Allow-Headers",
-          "value": "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization, Cron-Secret"
+          "value": "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization"
         }
       ]
     }

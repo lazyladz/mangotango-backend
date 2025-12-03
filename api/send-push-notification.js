@@ -202,15 +202,33 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const { type } = req.body;
+    // 🔥 FIX: Parse JSON body for Vercel Serverless Functions
+    let requestBody;
+    if (typeof req.body === 'string') {
+      try {
+        requestBody = JSON.parse(req.body);
+      } catch (parseError) {
+        console.error('❌ JSON Parse Error:', parseError.message);
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Invalid JSON format',
+          error: parseError.message 
+        });
+      }
+    } else {
+      requestBody = req.body || {};
+    }
+    
+    console.log('✅ Parsed request body:', requestBody);
+    const { type } = requestBody;
     
     // Handle different types of notifications
     if (type === 'message') {
-      // Handle message notifications (existing code)
-      return await handleMessageNotification(req, res);
+      // Handle message notifications
+      return await handleMessageNotification(requestBody, res);
     } else if (type === 'weather') {
       // Handle weather notifications
-      return await handleWeatherNotification(req, res);
+      return await handleWeatherNotification(requestBody, res);
     } else {
       return res.status(400).json({ 
         success: false, 
@@ -228,8 +246,8 @@ module.exports = async (req, res) => {
   }
 };
 
-// Handle message notifications (your existing code)
-async function handleMessageNotification(req, res) {
+// Handle message notifications
+async function handleMessageNotification(body, res) {
   const { 
     conversationId, 
     technicianName, 
@@ -237,7 +255,7 @@ async function handleMessageNotification(req, res) {
     recipientId,
     senderId,
     technicianId
-  } = req.body;
+  } = body;
 
   console.log('📨 MESSAGE NOTIFICATION REQUEST:');
   console.log('   - conversationId:', conversationId);
@@ -317,12 +335,12 @@ async function handleMessageNotification(req, res) {
 }
 
 // Handle weather notifications
-async function handleWeatherNotification(req, res) {
+async function handleWeatherNotification(body, res) {
   const { 
     city,
     userId,  // Send to specific user
     broadcast // Send to all users in city
-  } = req.body;
+  } = body;
 
   console.log('🌤️ WEATHER NOTIFICATION REQUEST:');
   console.log('   - city:', city);
@@ -355,11 +373,9 @@ async function handleWeatherNotification(req, res) {
     else failCount++;
     
   } else if (broadcast) {
-    // Send to all users (you need to implement user-city mapping)
-    // This is a simplified version - you'd need to query your database for users in this city
+    // Send to all users
     console.log('📢 Broadcasting weather to all users in', city);
     
-    // For now, let's send to all users (you should filter by city preference)
     const usersRef = db.ref('user_tokens');
     const usersSnapshot = await usersRef.once('value');
     const users = usersSnapshot.val();

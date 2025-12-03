@@ -31,60 +31,6 @@ function extractTechnicianIdFromConversation(conversationId, senderId) {
   return '';
 }
 
-// Add to your send-push-notification.js
-
-// New endpoint for testing weather notifications
-async function handleTestWeatherNotification(req, res) {
-  console.log('🧪 TEST WEATHER NOTIFICATION REQUEST');
-  
-  const { userId, interval = 5 } = req.body; // interval in minutes
-  
-  if (!userId) {
-    return res.status(400).json({ 
-      success: false, 
-      message: 'userId is required' 
-    });
-  }
-  
-  try {
-    // Get a random city
-    const cities = ['Manila', 'Cebu City', 'Davao City', 'Baguio', 'Iloilo City'];
-    const randomCity = cities[Math.floor(Math.random() * cities.length)];
-    
-    // Fetch real weather
-    const weatherData = await fetchWeatherForCity(randomCity);
-    if (!weatherData) {
-      return res.status(500).json({ 
-        success: false, 
-        message: 'Failed to fetch weather data' 
-      });
-    }
-    
-    // Send notification
-    const success = await sendWeatherNotificationToUser(userId, randomCity, weatherData);
-    
-    return res.status(200).json({
-      success: true,
-      message: `Test weather notification sent to ${userId} for ${randomCity}`,
-      weather: weatherData,
-      nextTestIn: `${interval} minutes`
-    });
-    
-  } catch (error) {
-    console.error('❌ Test weather error:', error);
-    return res.status(500).json({ 
-      success: false, 
-      message: 'Test failed',
-      error: error.message 
-    });
-  }
-}
-
-// Then in your main handler, add:
-if (type === 'test-weather') {
-  return await handleTestWeatherNotification(requestBody, res);
-}
-
 module.exports = async (req, res) => {
   // 🔥 COMPLETE CORS HEADERS
   res.setHeader('Access-Control-Allow-Credentials', 'true');

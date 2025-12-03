@@ -2,7 +2,7 @@ name: 🌤️ MangoTango Weather Updates
 on:
   # Runs every 5 minutes exactly
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '* * * * *'
   
   # Allow manual trigger from GitHub UI
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
   trigger-weather-notifications:
     name: Send Weather Alerts to Users
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 1
     
     steps:
       - name: 🏁 Start Cron Job

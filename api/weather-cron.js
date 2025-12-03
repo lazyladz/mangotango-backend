@@ -4,6 +4,15 @@
 const admin = require('firebase-admin');
 const axios = require('axios');
 
+const { action, userId, city, secret } = requestBody;
+
+// IMPORTANT: Add this to accept manual cron triggers
+if (action === 'cron-simulate' && secret === process.env.CRON_SECRET) {
+    console.log('🔐 Manual cron simulation triggered via GitHub Actions');
+    const result = await handleCronJob();
+    return res.status(200).json(result);
+}
+
 // Initialize Firebase Admin
 function initializeFirebase() {
     if (!admin.apps.length) {

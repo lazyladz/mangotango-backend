@@ -150,12 +150,12 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
         // Create notification summary (what shows on screen)
         const notificationBody = createNotificationSummary(temp, condition, pests, advice);
         
-        // Prepare FCM message with expanded details
+        // ✅ SIMPLE FIXED VERSION - No problematic Android fields
         const messagePayload = {
             token: tokenData.fcmToken,
             notification: {
                 title: title,
-                body: notificationBody  // Shows: "30°C | Cloudy | ⚠️ 2 pests | Water plants early morning"
+                body: notificationBody
             },
             data: {
                 type: 'weather',
@@ -167,50 +167,20 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
                 pests: JSON.stringify(pests),
                 advice: advice,
                 timestamp: new Date().toISOString(),
-                message: fullMessage,  // Full detailed message
+                message: fullMessage,
                 test: isTest.toString(),
-                source: 'github-actions-cron',
-                expanded_details: 'true'
+                source: 'github-actions-cron'
             },
             android: {
-                priority: 'high',
-                notification: {
-                    channelId: 'weather_alerts',
-                    style: 'bigText',
-                    bigText: fullMessage,  // Shows when expanded
-                    summaryText: `${temp}°C | ${condition}`,
-                    sound: 'default',
-                    icon: 'ic_notification',
-                    color: '#4CAF50'
-                }
-            },
-            apns: {
-                payload: {
-                    aps: {
-                        alert: {
-                            title: title,
-                            body: notificationBody
-                        },
-                        sound: 'default',
-                        badge: 1
-                    }
-                }
-            },
-            webpush: {
-                notification: {
-                    title: title,
-                    body: notificationBody,
-                    icon: 'https://your-app.com/icon.png'
-                }
+                priority: 'high'
             }
         };
         
         console.log(`🚀 Sending FCM to ${userId}`);
-        console.log(`📱 Notification: ${notificationBody}`);
-        console.log(`📄 Full message: ${fullMessage.substring(0, 100)}...`);
+        console.log(`📱 Notification: ${title} - ${notificationBody}`);
         
         const response = await admin.messaging().send(messagePayload);
-        console.log(`✅ Sent: ${response}`);
+        console.log(`✅ Sent successfully to ${userId}`);
         
         return true;
         

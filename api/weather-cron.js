@@ -374,7 +374,7 @@ module.exports = async (req, res) => {
     }
     
   } catch (error) {
-    console.error('❌ Weather Cron Error:', error);
+    console.error('❌ Weather Crons Error:', error);
     return res.status(500).json({
       success: false,
       error: error.message,

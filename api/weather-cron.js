@@ -21,8 +21,94 @@ try {
 
 const db = admin.database();
 
-// ==================== HELPER FUNCTIONS ====================
+// ==================== DEBUG FUNCTION ====================
+async function debugTokenStorage() {
+    try {
+        const tokensRef = db.ref('user_tokens');
+        const snapshot = await tokensRef.once('value');
+        const tokens = snapshot.val();
+        
+        console.log('\n🔍 DEBUG - Current user_tokens structure:');
+        if (tokens && Object.keys(tokens).length > 0) {
+            Object.entries(tokens).forEach(([userId, tokenData]) => {
+                console.log(`   👤 ${userId.substring(0, 8)}...:`, {
+                    hasToken: !!tokenData?.fcmToken,
+                    timestamp: tokenData?.updatedAt || tokenData?.timestamp || 'None',
+                    age: tokenData?.updatedAt || tokenData?.timestamp ? 
+                        `${Math.round((Date.now() - (tokenData.updatedAt || tokenData.timestamp || 0))/1000/60)} minutes ago` : 
+                        'Unknown',
+                    tokenPreview: tokenData?.fcmToken?.substring(0, 15) + '...'
+                });
+            });
+        } else {
+            console.log('   ❌ No tokens found in user_tokens');
+        }
+        
+        return tokens;
+    } catch (error) {
+        console.error('❌ Debug error:', error);
+        return null;
+    }
+}
 
+// ==================== ACTIVE USER CHECK FUNCTION ====================
+async function shouldSendWeatherToUser(userId) {
+    try {
+        console.log(`🔍 Checking user activity: ${userId.substring(0, 8)}...`);
+        
+        // 1. Check if user exists
+        const userRef = db.ref(`users/${userId}`);
+        const userSnapshot = await userRef.once('value');
+        const userData = userSnapshot.val();
+        
+        if (!userData) {
+            console.log(`   ❌ User not found in database`);
+            return false;
+        }
+        
+        // 2. Check if user has a selected city (not Manila/default)
+        const userCity = userData.preferredCity;
+        if (!userCity || userCity === 'Manila' || userCity === '') {
+            console.log(`   📍 No city selected or default city (${userCity})`);
+            return false;
+        }
+        
+        // 3. Check FCM token existence and age
+        const tokenRef = db.ref(`user_tokens/${userId}`);
+        const tokenSnapshot = await tokenRef.once('value');
+        const tokenData = tokenSnapshot.val();
+        
+        if (!tokenData || !tokenData.fcmToken) {
+            console.log(`   📱 No FCM token found`);
+            return false;
+        }
+        
+        // 4. Check token age (handle missing updatedAt)
+        const tokenTimestamp = tokenData.updatedAt || tokenData.timestamp || 0;
+        const tokenAge = Date.now() - tokenTimestamp;
+        const TWO_HOURS = 2 * 60 * 60 * 1000;
+        
+        if (tokenAge > TWO_HOURS) {
+            console.log(`   ⏰ Token too old (${Math.round(tokenAge/1000/60)} minutes)`);
+            
+            // Auto-cleanup: Remove very old tokens (>24 hours)
+            if (tokenAge > 24 * 60 * 60 * 1000) { // 24 hours
+                await tokenRef.remove();
+                console.log(`   🗑️ Removed old token (${Math.round(tokenAge/1000/60/60)} hours old)`);
+            }
+            return false;
+        }
+        
+        console.log(`   ✅ Active user (token updated ${Math.round(tokenAge/1000/60)} minutes ago)`);
+        return true;
+        
+    } catch (error) {
+        console.error(`   ❌ Error checking user ${userId}:`, error.message);
+        return false;
+    }
+}
+
+// ==================== EXISTING HELPER FUNCTIONS ====================
 function getPestAlerts(temp, condition, humidity, windSpeed) {
     const pests = [];
     
@@ -54,23 +140,19 @@ function getFarmingAdvice(temp, condition, humidity, windSpeed) {
 }
 
 function createNotificationSummary(temp, condition, pests, advice) {
-    // Create a compact summary for notification
     let summary = `${temp}°C | ${condition}`;
     
     if (pests.length > 0) {
-        // Add pest indicator
         summary += ` | ⚠️ ${pests.length} pest${pests.length > 1 ? 's' : ''}`;
     } else {
         summary += ` | ✅ No pests`;
     }
     
-    // Add first advice
     const firstAdvice = advice.split('.')[0];
     if (firstAdvice !== 'Normal farming activities') {
         summary += ` | ${firstAdvice}`;
     }
     
-    // Limit length
     if (summary.length > 100) {
         summary = summary.substring(0, 97) + '...';
     }
@@ -83,7 +165,7 @@ async function fetchWeatherForCity(city) {
         const WEATHER_API_KEY = process.env.WEATHER_API_KEY || 'fbc049c0ab6883e70eb66f800322b567';
         const url = `https://api.openweathermap.org/data/2.5/weather?q=${city},PH&appid=${WEATHER_API_KEY}&units=metric`;
         
-        console.log(`🌤️ Fetching weather for: ${city}`);
+        console.log(`   🌤️ Fetching weather for: ${city}`);
         const response = await axios.get(url);
         
         const data = response.data;
@@ -112,14 +194,14 @@ async function fetchWeatherForCity(city) {
         };
         
     } catch (error) {
-        console.error(`❌ Error fetching weather for ${city}:`, error.message);
+        console.error(`   ❌ Error fetching weather for ${city}:`, error.message);
         return null;
     }
 }
 
 async function sendWeatherNotificationToUser(userId, city, weatherData, isTest = false) {
     try {
-        console.log(`🌤️ Sending to user: ${userId} for ${city}`);
+        console.log(`   📤 Sending to user: ${userId.substring(0, 8)}... for ${city}`);
         
         // Get user's FCM token
         const tokenRef = db.ref(`user_tokens/${userId}`);
@@ -127,7 +209,7 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
         const tokenData = tokenSnapshot.val();
         
         if (!tokenData || !tokenData.fcmToken) {
-            console.log(`❌ No FCM token for user: ${userId}`);
+            console.log(`   ❌ No FCM token for user`);
             return false;
         }
         
@@ -147,10 +229,10 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
         
         const fullMessage = `${weatherMessage}${pestMessage}\n\n💡 ${advice}`;
         
-        // Create notification summary (what shows on screen)
+        // Create notification summary
         const notificationBody = createNotificationSummary(temp, condition, pests, advice);
         
-        // ✅ SIMPLE FIXED VERSION - No problematic Android fields
+        // Notification payload
         const messagePayload = {
             token: tokenData.fcmToken,
             notification: {
@@ -176,34 +258,35 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
             }
         };
         
-        console.log(`🚀 Sending FCM to ${userId}`);
-        console.log(`📱 Notification: ${title} - ${notificationBody}`);
+        console.log(`   🚀 Sending FCM notification`);
         
         const response = await admin.messaging().send(messagePayload);
-        console.log(`✅ Sent successfully to ${userId}`);
+        console.log(`   ✅ Sent successfully`);
         
         return true;
         
     } catch (error) {
-        console.error(`❌ Error sending to ${userId}:`, error.message);
+        console.error(`   ❌ Error sending:`, error.message);
         
         // Remove invalid token
         if (error.code === 'messaging/registration-token-not-registered') {
             await db.ref(`user_tokens/${userId}`).remove();
-            console.log(`🗑️ Removed invalid token for: ${userId}`);
+            console.log(`   🗑️ Removed invalid token`);
         }
         
         return false;
     }
 }
 
-// ==================== MAIN FUNCTIONS ====================
-
+// ==================== UPDATED MAIN CRON FUNCTION ====================
 async function handleCronJob() {
     console.log('⏰ CRON JOB STARTED via GitHub Actions');
     console.log('🕒 Time:', new Date().toISOString());
     
     try {
+        // Debug token storage first
+        await debugTokenStorage();
+        
         // Get all users with their preferred cities
         const usersRef = db.ref('users');
         const usersSnapshot = await usersRef.once('value');
@@ -219,8 +302,9 @@ async function handleCronJob() {
         }
         
         const userCount = Object.keys(users).length;
-        console.log(`📢 Found ${userCount} users`);
+        console.log(`\n📢 Found ${userCount} users`);
         
+        let activeUsers = 0;
         let successCount = 0;
         let failCount = 0;
         const results = [];
@@ -230,27 +314,32 @@ async function handleCronJob() {
             if (!userData) continue;
             
             try {
-                // Get user's preferred city from Firebase
-                let userCity = userData.preferredCity;
+                console.log(`\n👤 Processing: ${userId.substring(0, 8)}...`);
                 
-                // FIX: Don't default to Manila if user hasn't selected a city
-                if (!userCity || userCity === 'Manila') {
-                    console.log(`  ⚠️ User ${userId.substring(0, 8)}... hasn't selected a city, skipping`);
-                    continue;  // Skip users who haven't selected a city
+                // 1. CHECK IF USER IS ACTIVE AND HAS SELECTED CITY
+                const shouldSend = await shouldSendWeatherToUser(userId);
+                
+                if (!shouldSend) {
+                    console.log(`   ⏸️ Skipping user`);
+                    continue;
                 }
                 
-                console.log(`  👤 Processing: ${userId.substring(0, 8)}..., City: ${userCity}`);
+                activeUsers++;
                 
-                // Fetch weather for user's city
+                // 2. Get user's preferred city
+                const userCity = userData.preferredCity;
+                console.log(`   📍 User's city: ${userCity}`);
+                
+                // 3. Fetch weather
                 const weatherData = await fetchWeatherForCity(userCity);
                 
                 if (!weatherData) {
-                    console.log(`  ❌ Failed to fetch weather for ${userCity}`);
+                    console.log(`   ❌ Failed to fetch weather`);
                     failCount++;
                     continue;
                 }
                 
-                // Send notification
+                // 4. Send notification
                 const success = await sendWeatherNotificationToUser(userId, userCity, weatherData, false);
                 
                 if (success) {
@@ -260,42 +349,41 @@ async function handleCronJob() {
                         city: userCity,
                         temp: weatherData.temp,
                         condition: weatherData.condition,
-                        pests: weatherData.pests.length,
-                        advice: weatherData.advice.substring(0, 30) + '...'
+                        pests: weatherData.pests.length
                     });
-                    console.log(`  ✅ Sent weather for ${userCity} (${weatherData.temp}°C, ${weatherData.pests.length} pests)`);
+                    console.log(`   ✅ Weather sent for ${userCity} (${weatherData.temp}°C)`);
                 } else {
                     failCount++;
-                    console.log(`  ❌ Failed to send to ${userId}`);
+                    console.log(`   ❌ Failed to send`);
                 }
                 
                 // Small delay to avoid rate limits
                 await new Promise(resolve => setTimeout(resolve, 100));
                 
             } catch (userError) {
-                console.error(`  ❌ Error processing ${userId}:`, userError.message);
+                console.error(`   ❌ Error processing user:`, userError.message);
                 failCount++;
             }
         }
         
         const summary = {
             totalUsers: userCount,
-            usersWithCity: userEntries.filter(([_, data]) => data.preferredCity && data.preferredCity !== 'Manila').length,
+            activeUsersWithCity: activeUsers,
             processed: successCount + failCount,
             successful: successCount,
             failed: failCount,
-            successRate: userCount > 0 ? Math.round((successCount / userCount) * 100) : 0,
+            successRate: activeUsers > 0 ? Math.round((successCount / activeUsers) * 100) : 0,
             timestamp: new Date().toISOString(),
             nextRun: 'in 5 minutes via GitHub Actions'
         };
         
-        console.log('📊 Cron Job Summary:', summary);
+        console.log('\n📊 Cron Job Summary:', JSON.stringify(summary, null, 2));
         
         return {
             success: true,
             summary,
             results: results.slice(0, 5),
-            message: `Processed ${successCount + failCount} users with selected cities, ${successCount} successful`
+            message: `Processed ${activeUsers} active users, ${successCount} successful`
         };
         
     } catch (error) {
@@ -308,6 +396,7 @@ async function handleCronJob() {
     }
 }
 
+// ==================== EXISTING FUNCTIONS ====================
 async function handleManualTest(userId, city = 'Manila') {
     console.log('🧪 Manual test requested');
     
@@ -351,7 +440,6 @@ async function handleQuickTest(city = 'Manila') {
 }
 
 // ==================== MAIN HANDLER ====================
-
 module.exports = async (req, res) => {
     // CORS headers
     res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -365,7 +453,6 @@ module.exports = async (req, res) => {
     }
     
     console.log(`📨 Request: ${req.method} ${new Date().toISOString()}`);
-    console.log(`👤 User-Agent: ${req.headers['user-agent'] || 'Unknown'}`);
     
     try {
         // Parse request body
@@ -379,7 +466,6 @@ module.exports = async (req, res) => {
         // Handle GitHub Actions cron trigger
         if (action === 'cron-simulate' && secret === process.env.CRON_SECRET) {
             console.log('🔐 Authenticated via GitHub Actions');
-            console.log(`🌐 Source: ${source || 'unknown'}`);
             
             const result = await handleCronJob();
             return res.status(200).json(result);
@@ -408,7 +494,7 @@ module.exports = async (req, res) => {
                 const users = usersSnapshot.val() || {};
                 
                 const usersWithCity = Object.values(users).filter(user => 
-                    user.preferredCity && user.preferredCity !== 'Manila'
+                    user.preferredCity && user.preferredCity !== 'Manila' && user.preferredCity !== ''
                 ).length;
                 
                 return res.status(200).json({
@@ -423,15 +509,15 @@ module.exports = async (req, res) => {
                         usersWithSelectedCity: usersWithCity,
                         usersDefaultManila: Object.keys(users).length - usersWithCity
                     },
-                    endpoints: [
-                        { action: 'test', method: 'POST', desc: 'Send test notification with pests & advice' },
-                        { action: 'quick-test', method: 'POST', desc: 'Fetch weather with pest analysis' },
-                        { action: 'cron-simulate', method: 'POST', desc: 'Trigger cron (requires secret)' }
-                    ]
+                    filters: {
+                        requiresCity: true,
+                        requiresRecentToken: 'within 2 hours',
+                        autoCleanup: 'tokens older than 24 hours',
+                        skipsInactiveUsers: true
+                    }
                 });
                 
             default:
-                // Default GET response
                 if (req.method === 'GET') {
                     return res.status(200).json({
                         service: 'MangoTango Weather Cron',
@@ -440,19 +526,17 @@ module.exports = async (req, res) => {
                             'Personalized city weather',
                             'Pest alerts based on conditions',
                             'Farming advice',
-                            'Expanded notification details',
-                            'Skips users without selected city'
+                            'Active user filtering',
+                            'Auto token cleanup'
                         ],
                         timestamp: new Date().toISOString(),
-                        note: 'This endpoint is triggered by GitHub Actions every 5 minutes',
-                        manual_test: 'curl -X POST https://mangotango-backend.vercel.app/api/weather-cron -d \'{"action":"test","userId":"YOUR_USER_ID","city":"Manila"}\''
+                        note: 'Only sends to users who are active (FCM token updated in last 2 hours)'
                     });
                 }
                 
                 return res.status(200).json({
                     message: 'Weather cron service is running',
-                    next_cron: 'Triggered by GitHub Actions every 5 minutes',
-                    features: 'Now includes pest alerts and farming advice in notifications',
+                    filters: 'Only sends to active users with recent FCM tokens',
                     timestamp: new Date().toISOString()
                 });
         }

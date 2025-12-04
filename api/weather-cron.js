@@ -292,83 +292,172 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
     try {
         console.log(`   📤 Sending to user: ${userId.substring(0, 8)}... for ${city}`);
         
-        // Get user's FCM token
-        const tokenRef = db.ref(`user_tokens/${userId}`);
-        const tokenSnapshot = await tokenRef.once('value');
-        const tokenData = tokenSnapshot.val();
+        let tokensToSend = [];
         
-        if (!tokenData || !tokenData.fcmToken) {
-            console.log(`   ❌ No FCM token for user`);
+        // Try new format first: devices structure
+        const devicesRef = db.ref(`user_tokens/${userId}/devices`);
+        const devicesSnapshot = await devicesRef.once('value');
+        const devices = devicesSnapshot.val();
+        
+        if (devices) {
+            console.log(`   📱 Found ${Object.keys(devices).length} device(s) in new format`);
+            
+            Object.entries(devices).forEach(([deviceId, deviceData]) => {
+                if (deviceData?.fcmToken) {
+                    // Check if device is active (logged in within last 48 hours)
+                    const lastLoginTime = deviceData.loggedInAt || deviceData.updatedAt || 0;
+                    const hoursSinceLogin = (Date.now() - lastLoginTime) / (1000 * 60 * 60);
+                    
+                    if (hoursSinceLogin <= 48) {
+                        tokensToSend.push({
+                            token: deviceData.fcmToken,
+                            deviceId: deviceId,
+                            source: 'device',
+                            lastLogin: lastLoginTime
+                        });
+                    } else {
+                        console.log(`   ⏸️ Device ${deviceId.substring(0, 8)}... inactive (${Math.round(hoursSinceLogin)}h ago)`);
+                    }
+                }
+            });
+        }
+        
+        // If no devices found, try old format
+        if (tokensToSend.length === 0) {
+            const tokenRef = db.ref(`user_tokens/${userId}`);
+            const tokenSnapshot = await tokenRef.once('value');
+            const tokenData = tokenSnapshot.val();
+            
+            if (tokenData?.fcmToken && !tokenData.devices) {
+                console.log(`   🔄 Using old token format`);
+                tokensToSend.push({
+                    token: tokenData.fcmToken,
+                    deviceId: 'legacy_device',
+                    source: 'legacy',
+                    lastLogin: tokenData.updatedAt || Date.now()
+                });
+                
+                // Migrate to new format
+                await migrateToDeviceFormat(userId, tokenData.fcmToken);
+            }
+        }
+        
+        if (tokensToSend.length === 0) {
+            console.log(`   ❌ No valid tokens found for user`);
             return false;
         }
         
+        console.log(`   📱 Found ${tokensToSend.length} token(s) to send`);
+        
         const { temp, condition, humidity, windSpeed, pests, advice, fetchedAt } = weatherData;
-        
-        // Create notification message
-        const title = isTest 
-            ? `🧪 Weather Test: ${city}` 
-            : `🌤️ Weather Update: ${city}`;
-        
-        // Create detailed message
-        const weatherMessage = `🌡️ ${temp}°C | ${condition}\n💧 ${humidity}% | 💨 ${windSpeed}m/s\n⏰ ${fetchedAt}`;
-        
-        const pestMessage = pests.length > 0 
-            ? `\n\n⚠️ Pest Alert:\n${pests.map(p => `• ${p}`).join('\n')}`
-            : '\n\n✅ No major pest threats';
-        
-        const fullMessage = `${weatherMessage}${pestMessage}\n\n💡 ${advice}`;
-        
-        // Create notification summary
+        const title = isTest ? `🧪 Weather Test: ${city}` : `🌤️ Weather Update: ${city}`;
         const notificationBody = createNotificationSummary(temp, condition, pests, advice);
         
-        // Notification payload
-        const messagePayload = {
-            token: tokenData.fcmToken,
-            notification: {
-                title: title,
-                body: notificationBody
-            },
-            data: {
-                type: 'weather',
-                city: city,
-                temperature: temp.toString(),
-                condition: condition,
-                humidity: humidity.toString(),
-                wind_speed: windSpeed.toString(),
-                pests: JSON.stringify(pests),
-                advice: advice,
-                timestamp: new Date().toISOString(),
-                message: fullMessage,
-                test: isTest.toString(),
-                source: 'github-actions-cron',
-                userId: userId // Add user ID to track
-            },
-            android: {
-                priority: 'high'
+        let sentCount = 0;
+        
+        // Send to each token
+        for (const tokenInfo of tokensToSend) {
+            try {
+                const messagePayload = {
+                    token: tokenInfo.token,
+                    notification: {
+                        title: title,
+                        body: notificationBody
+                    },
+                    data: {
+                        type: 'weather',
+                        city: city,
+                        temperature: temp.toString(),
+                        condition: condition,
+                        humidity: humidity.toString(),
+                        wind_speed: windSpeed.toString(),
+                        pests: JSON.stringify(pests),
+                        advice: advice,
+                        timestamp: new Date().toISOString(),
+                        userId: userId,
+                        deviceId: tokenInfo.deviceId,
+                        source: tokenInfo.source,
+                        test: isTest.toString(),
+                        cronJobId: 'github-actions'
+                    },
+                    android: {
+                        priority: 'high'
+                    }
+                };
+                
+                console.log(`   📱 Sending to ${tokenInfo.source} device ${tokenInfo.deviceId.substring(0, 8)}...`);
+                
+                const response = await admin.messaging().send(messagePayload);
+                sentCount++;
+                console.log(`   ✅ Sent successfully`);
+                
+            } catch (sendError) {
+                console.error(`   ❌ Error sending:`, sendError.message);
+                
+                // Remove invalid token
+                if (sendError.code === 'messaging/registration-token-not-registered') {
+                    console.log(`   🗑️ Removing invalid token`);
+                    
+                    if (tokenInfo.source === 'device') {
+                        await db.ref(`user_tokens/${userId}/devices/${tokenInfo.deviceId}`).remove();
+                    } else if (tokenInfo.source === 'legacy') {
+                        await db.ref(`user_tokens/${userId}`).remove();
+                    }
+                }
             }
-        };
-        
-        console.log(`   🚀 Sending FCM notification`);
-        
-        const response = await admin.messaging().send(messagePayload);
-        console.log(`   ✅ Sent successfully`);
-        
-        return true;
-        
-    } catch (error) {
-        console.error(`   ❌ Error sending:`, error.message);
-        
-        // Remove invalid token
-        if (error.code === 'messaging/registration-token-not-registered') {
-            await db.ref(`user_tokens/${userId}`).remove();
-            console.log(`   🗑️ Removed invalid token`);
+            
+            // Small delay between sends
+            await new Promise(resolve => setTimeout(resolve, 100));
         }
         
+        console.log(`   📊 Sent to ${sentCount} out of ${tokensToSend.length} token(s)`);
+        return sentCount > 0;
+        
+    } catch (error) {
+        console.error(`   ❌ Error:`, error.message);
         return false;
     }
 }
 
-// ==================== UPDATED MAIN CRON FUNCTION ====================
+async function migrateToDeviceFormat(userId, token) {
+    try {
+        console.log(`   🔄 Migrating user ${userId.substring(0, 8)}... to device format`);
+        
+        const deviceId = `legacy_${Date.now()}`;
+        const deviceData = {
+            fcmToken: token,
+            deviceId: deviceId,
+            deviceModel: 'Unknown',
+            deviceBrand: 'Unknown',
+            androidVersion: 'Unknown',
+            migratedAt: Date.now(),
+            loggedInAt: Date.now(),
+            updatedAt: Date.now(),
+            isActive: true,
+            source: 'migrated'
+        };
+        
+        // Create devices structure
+        await db.ref(`user_tokens/${userId}/devices`).set({
+            [deviceId]: deviceData
+        });
+        
+        // Keep old format for backward compatibility
+        await db.ref(`user_tokens/${userId}`).update({
+            fcmToken: token,
+            updatedAt: Date.now(),
+            latestDeviceId: deviceId,
+            deviceCount: 1,
+            migrated: true
+        });
+        
+        console.log(`   ✅ Migration complete`);
+    } catch (error) {
+        console.error(`   ❌ Migration failed:`, error.message);
+    }
+}
+
+// ==================== UPDATED MAIN CRON FUNCTION (NO COOLDOWN) ====================
 async function handleCronJob() {
     const jobId = Date.now();
     console.log(`\n⏰ CRON JOB STARTED - Job ID: ${jobId}`);
@@ -426,9 +515,6 @@ async function handleCronJob() {
         const userCount = Object.keys(users).length;
         console.log(`\n📢 Found ${userCount} users in database`);
         
-        // Rate limiting: Check last notification time (30 minutes minimum)
-        const notificationCooldown = 30 * 60 * 1000; // 30 minutes
-        
         // Cache for weather data to avoid duplicate API calls
         const weatherCache = new Map();
         
@@ -462,19 +548,7 @@ async function handleCronJob() {
                 }
                 processedUsers.add(userId);
                 
-                // 2. Check rate limiting - last notification time
-                const lastNotifRef = db.ref(`last_notification/${userId}`);
-                const lastNotifSnapshot = await lastNotifRef.once('value');
-                const lastNotif = lastNotifSnapshot.val();
-                
-                if (lastNotif && Date.now() - lastNotif.timestamp < notificationCooldown) {
-                    const minutesAgo = Math.round((Date.now() - lastNotif.timestamp) / 60000);
-                    console.log(`   ⏸️ User received notification ${minutesAgo} minutes ago (${lastNotif.city})`);
-                    skippedCount++;
-                    continue;
-                }
-                
-                // 3. CHECK IF USER IS ACTIVE AND HAS SELECTED CITY
+                // 2. CHECK IF USER IS ACTIVE AND HAS SELECTED CITY
                 const shouldSend = await shouldSendWeatherToUser(userId);
                 
                 if (!shouldSend) {
@@ -485,11 +559,11 @@ async function handleCronJob() {
                 
                 activeUsers++;
                 
-                // 4. Get user's preferred city
+                // 3. Get user's preferred city
                 const userCity = userData.preferredCity;
                 console.log(`   📍 User's city: ${userCity}`);
                 
-                // 5. Check user's FCM token for duplicates
+                // 4. Check user's FCM token for duplicates
                 const tokenRef = db.ref(`user_tokens/${userId}`);
                 const tokenSnapshot = await tokenRef.once('value');
                 const tokenData = tokenSnapshot.val();
@@ -500,9 +574,8 @@ async function handleCronJob() {
                     continue;
                 }
                 
+                // Check if token was already used in this run (shared tokens)
                 const userToken = tokenData.fcmToken;
-                
-                // Check if token was already used in this run
                 if (processedTokens.has(userToken)) {
                     console.log(`   ⚠️ Token already used for another user in this run`);
                     console.log(`   ℹ️ This might be a shared device or duplicate account`);
@@ -511,7 +584,7 @@ async function handleCronJob() {
                 }
                 processedTokens.add(userToken);
                 
-                // 6. Fetch weather (use cache if available)
+                // 5. Fetch weather (use cache if available)
                 let weatherData;
                 if (weatherCache.has(userCity)) {
                     console.log(`   🔄 Using cached weather for ${userCity}`);
@@ -536,14 +609,14 @@ async function handleCronJob() {
                     continue;
                 }
                 
-                // 7. Send notification
+                // 6. Send notification (NO COOLDOWN CHECK)
                 const success = await sendWeatherNotificationToUser(userId, userCity, weatherData, false);
                 
                 if (success) {
                     successCount++;
                     
-                    // Update last notification time
-                    await lastNotifRef.set({
+                    // Update last notification time (for tracking only, not for cooldown)
+                    await db.ref(`last_notification/${userId}`).set({
                         timestamp: Date.now(),
                         city: userCity,
                         jobId: jobId
@@ -601,8 +674,8 @@ async function handleCronJob() {
                 processedUsers: processedUsers.size,
                 processedTokens: processedTokens.size,
                 weatherCacheHits: weatherCache.size,
-                rateLimitEnabled: true,
-                cooldownMinutes: 30
+                rateLimitEnabled: false, // COOLDOWN DISABLED
+                cooldownMinutes: 0
             },
             timestamp: new Date().toISOString(),
             nextRun: 'in 5 minutes via GitHub Actions'
@@ -825,11 +898,11 @@ module.exports = async (req, res) => {
                     duplicateProtection: {
                         enabled: true,
                         features: [
-                            '30-minute cooldown per user',
                             'Token deduplication',
                             'User deduplication',
                             'Weather caching',
-                            'Job overlap prevention'
+                            'Job overlap prevention',
+                            'COOLDOWN DISABLED - Users get notifications every run'
                         ]
                     },
                     stats: {
@@ -855,7 +928,7 @@ module.exports = async (req, res) => {
                             'Farming advice',
                             'Active user filtering',
                             'Duplicate notification prevention',
-                            '30-minute cooldown per user',
+                            'NO COOLDOWN - Notifications every run',
                             'Auto token cleanup'
                         ],
                         endpoints: [
@@ -871,7 +944,7 @@ module.exports = async (req, res) => {
                 
                 return res.status(200).json({
                     message: 'Weather cron service is running',
-                    duplicateProtection: 'Enabled (30-minute cooldown, token/user deduplication)',
+                    duplicateProtection: 'Enabled (token/user deduplication, NO cooldown)',
                     timestamp: new Date().toISOString()
                 });
         }

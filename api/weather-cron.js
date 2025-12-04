@@ -21,7 +21,7 @@ try {
 
 const db = admin.database();
 
-// ==================== DEBUG FUNCTION ====================
+// ==================== DEBUG FUNCTIONS ====================
 async function debugTokenStorage() {
     try {
         const tokensRef = db.ref('user_tokens');
@@ -51,12 +51,117 @@ async function debugTokenStorage() {
     }
 }
 
+async function debugUserTokens() {
+    console.log('\n🔍 DEBUG - Checking for duplicate tokens...');
+    const tokensRef = db.ref('user_tokens');
+    const snapshot = await tokensRef.once('value');
+    const tokens = snapshot.val();
+    
+    if (tokens) {
+        // Find users with multiple token entries
+        const tokenMap = {};
+        Object.entries(tokens).forEach(([userId, tokenData]) => {
+            if (tokenData?.fcmToken) {
+                if (!tokenMap[userId]) tokenMap[userId] = [];
+                tokenMap[userId].push(tokenData.fcmToken);
+            }
+        });
+        
+        // Check for users with multiple token entries
+        let duplicateUserCount = 0;
+        Object.entries(tokenMap).forEach(([userId, tokenList]) => {
+            if (tokenList.length > 1) {
+                duplicateUserCount++;
+                console.log(`   ❌ ${userId.substring(0, 8)}... has ${tokenList.length} token entries!`);
+                console.log(`      Tokens: ${tokenList.map(t => t.substring(0, 15) + '...').join(', ')}`);
+            }
+        });
+        
+        if (duplicateUserCount === 0) {
+            console.log('   ✅ No users with multiple token entries found');
+        }
+        
+        // Also check for duplicate tokens across users
+        const tokenToUsers = {};
+        Object.entries(tokens).forEach(([userId, tokenData]) => {
+            if (tokenData?.fcmToken) {
+                const token = tokenData.fcmToken;
+                if (!tokenToUsers[token]) tokenToUsers[token] = [];
+                tokenToUsers[token].push(userId);
+            }
+        });
+        
+        let sharedTokenCount = 0;
+        Object.entries(tokenToUsers).forEach(([token, users]) => {
+            if (users.length > 1) {
+                sharedTokenCount++;
+                console.log(`   ❌ Token ${token.substring(0, 15)}... shared by ${users.length} users: ${users.map(u => u.substring(0, 8) + '...').join(', ')}`);
+            }
+        });
+        
+        if (sharedTokenCount === 0) {
+            console.log('   ✅ No tokens shared across multiple users');
+        }
+    }
+    
+    return tokens;
+}
+
+async function debugDuplicateUsers() {
+    console.log('\n🔍 DEBUG - Checking user database...');
+    const usersRef = db.ref('users');
+    const snapshot = await usersRef.once('value');
+    const users = snapshot.val();
+    
+    if (users) {
+        // Check for users with same email or phone
+        const emailMap = {};
+        const phoneMap = {};
+        
+        Object.entries(users).forEach(([userId, userData]) => {
+            if (userData?.email) {
+                if (!emailMap[userData.email]) emailMap[userData.email] = [];
+                emailMap[userData.email].push(userId);
+            }
+            if (userData?.phone) {
+                if (!phoneMap[userData.phone]) phoneMap[userData.phone] = [];
+                phoneMap[userData.phone].push(userId);
+            }
+        });
+        
+        let duplicateEmailCount = 0;
+        Object.entries(emailMap).forEach(([email, userIds]) => {
+            if (userIds.length > 1) {
+                duplicateEmailCount++;
+                console.log(`   ❌ Email "${email}" has ${userIds.length} user IDs: ${userIds.map(u => u.substring(0, 8) + '...').join(', ')}`);
+            }
+        });
+        
+        if (duplicateEmailCount === 0) {
+            console.log('   ✅ No duplicate emails found');
+        }
+        
+        let duplicatePhoneCount = 0;
+        Object.entries(phoneMap).forEach(([phone, userIds]) => {
+            if (userIds.length > 1) {
+                duplicatePhoneCount++;
+                console.log(`   ❌ Phone "${phone}" has ${userIds.length} user IDs: ${userIds.map(u => u.substring(0, 8) + '...').join(', ')}`);
+            }
+        });
+        
+        if (duplicatePhoneCount === 0) {
+            console.log('   ✅ No duplicate phones found');
+        }
+    }
+    
+    return users;
+}
+
 async function shouldSendWeatherToUser(userId) {
     try {
         console.log(`🔍 Checking user: ${userId.substring(0, 8)}...`);
         
         // 1. Check if user has FCM token in database
-        // If logout removed it, this check fails immediately
         const tokenRef = db.ref(`user_tokens/${userId}`);
         const tokenSnapshot = await tokenRef.once('value');
         const tokenData = tokenSnapshot.val();
@@ -92,7 +197,7 @@ async function shouldSendWeatherToUser(userId) {
     }
 }
 
-// ==================== EXISTING HELPER FUNCTIONS ====================
+// ==================== WEATHER FUNCTIONS ====================
 function getPestAlerts(temp, condition, humidity, windSpeed) {
     const pests = [];
     
@@ -235,7 +340,8 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
                 timestamp: new Date().toISOString(),
                 message: fullMessage,
                 test: isTest.toString(),
-                source: 'github-actions-cron'
+                source: 'github-actions-cron',
+                userId: userId // Add user ID to track
             },
             android: {
                 priority: 'high'
@@ -264,12 +370,42 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
 
 // ==================== UPDATED MAIN CRON FUNCTION ====================
 async function handleCronJob() {
-    console.log('⏰ CRON JOB STARTED via GitHub Actions');
+    const jobId = Date.now();
+    console.log(`\n⏰ CRON JOB STARTED - Job ID: ${jobId}`);
     console.log('🕒 Time:', new Date().toISOString());
     
     try {
+        // Check if another job is running
+        const runningRef = db.ref('cron_status/last_run');
+        const lastRunSnapshot = await runningRef.once('value');
+        
+        // If last run was less than 2 minutes ago, skip
+        if (lastRunSnapshot.exists()) {
+            const lastRun = lastRunSnapshot.val();
+            const timeSinceLastRun = Date.now() - lastRun.timestamp;
+            
+            if (timeSinceLastRun < 2 * 60 * 1000) { // 2 minutes
+                console.log(`⏸️ Another job ran ${Math.round(timeSinceLastRun/1000)} seconds ago, skipping`);
+                return {
+                    skipped: true,
+                    reason: 'Another job ran recently',
+                    lastRun: new Date(lastRun.timestamp).toISOString(),
+                    jobId: jobId
+                };
+            }
+        }
+        
+        // Mark this job as running
+        await runningRef.set({
+            timestamp: Date.now(),
+            jobId: jobId,
+            status: 'running'
+        });
+        
         // Debug token storage first
         await debugTokenStorage();
+        await debugUserTokens();
+        await debugDuplicateUsers();
         
         // Get all users with their preferred cities
         const usersRef = db.ref('users');
@@ -278,44 +414,121 @@ async function handleCronJob() {
         
         if (!users) {
             console.log('❌ No users found');
+            await runningRef.remove();
             return { 
                 success: false, 
                 error: 'No users found',
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                jobId: jobId
             };
         }
         
         const userCount = Object.keys(users).length;
-        console.log(`\n📢 Found ${userCount} users`);
+        console.log(`\n📢 Found ${userCount} users in database`);
+        
+        // Rate limiting: Check last notification time (30 minutes minimum)
+        const notificationCooldown = 30 * 60 * 1000; // 30 minutes
+        
+        // Cache for weather data to avoid duplicate API calls
+        const weatherCache = new Map();
+        
+        // Deduplication tracking
+        const processedUsers = new Set();
+        const processedTokens = new Set();
         
         let activeUsers = 0;
         let successCount = 0;
         let failCount = 0;
+        let skippedCount = 0;
         const results = [];
         const userEntries = Object.entries(users);
         
+        console.log(`\n🔄 Processing users...`);
+        
         for (const [userId, userData] of userEntries) {
-            if (!userData) continue;
+            if (!userData) {
+                skippedCount++;
+                continue;
+            }
             
             try {
                 console.log(`\n👤 Processing: ${userId.substring(0, 8)}...`);
                 
-                // 1. CHECK IF USER IS ACTIVE AND HAS SELECTED CITY
+                // 1. Check if user already processed in this run
+                if (processedUsers.has(userId)) {
+                    console.log(`   ⏸️ Already processed in this run, skipping`);
+                    skippedCount++;
+                    continue;
+                }
+                processedUsers.add(userId);
+                
+                // 2. Check rate limiting - last notification time
+                const lastNotifRef = db.ref(`last_notification/${userId}`);
+                const lastNotifSnapshot = await lastNotifRef.once('value');
+                const lastNotif = lastNotifSnapshot.val();
+                
+                if (lastNotif && Date.now() - lastNotif.timestamp < notificationCooldown) {
+                    const minutesAgo = Math.round((Date.now() - lastNotif.timestamp) / 60000);
+                    console.log(`   ⏸️ User received notification ${minutesAgo} minutes ago (${lastNotif.city})`);
+                    skippedCount++;
+                    continue;
+                }
+                
+                // 3. CHECK IF USER IS ACTIVE AND HAS SELECTED CITY
                 const shouldSend = await shouldSendWeatherToUser(userId);
                 
                 if (!shouldSend) {
-                    console.log(`   ⏸️ Skipping user`);
+                    console.log(`   ⏸️ User not active or no city selected`);
+                    skippedCount++;
                     continue;
                 }
                 
                 activeUsers++;
                 
-                // 2. Get user's preferred city
+                // 4. Get user's preferred city
                 const userCity = userData.preferredCity;
                 console.log(`   📍 User's city: ${userCity}`);
                 
-                // 3. Fetch weather
-                const weatherData = await fetchWeatherForCity(userCity);
+                // 5. Check user's FCM token for duplicates
+                const tokenRef = db.ref(`user_tokens/${userId}`);
+                const tokenSnapshot = await tokenRef.once('value');
+                const tokenData = tokenSnapshot.val();
+                
+                if (!tokenData || !tokenData.fcmToken) {
+                    console.log(`   ❌ No FCM token found`);
+                    failCount++;
+                    continue;
+                }
+                
+                const userToken = tokenData.fcmToken;
+                
+                // Check if token was already used in this run
+                if (processedTokens.has(userToken)) {
+                    console.log(`   ⚠️ Token already used for another user in this run`);
+                    console.log(`   ℹ️ This might be a shared device or duplicate account`);
+                    skippedCount++;
+                    continue;
+                }
+                processedTokens.add(userToken);
+                
+                // 6. Fetch weather (use cache if available)
+                let weatherData;
+                if (weatherCache.has(userCity)) {
+                    console.log(`   🔄 Using cached weather for ${userCity}`);
+                    weatherData = weatherCache.get(userCity);
+                    
+                    // Update timestamp for freshness
+                    weatherData.fetchedAt = new Date().toLocaleTimeString('en-PH', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        timeZone: 'Asia/Manila'
+                    });
+                } else {
+                    weatherData = await fetchWeatherForCity(userCity);
+                    if (weatherData) {
+                        weatherCache.set(userCity, weatherData);
+                    }
+                }
                 
                 if (!weatherData) {
                     console.log(`   ❌ Failed to fetch weather`);
@@ -323,17 +536,26 @@ async function handleCronJob() {
                     continue;
                 }
                 
-                // 4. Send notification
+                // 7. Send notification
                 const success = await sendWeatherNotificationToUser(userId, userCity, weatherData, false);
                 
                 if (success) {
                     successCount++;
+                    
+                    // Update last notification time
+                    await lastNotifRef.set({
+                        timestamp: Date.now(),
+                        city: userCity,
+                        jobId: jobId
+                    });
+                    
                     results.push({ 
                         userId: userId.substring(0, 8) + '...', 
                         city: userCity,
                         temp: weatherData.temp,
                         condition: weatherData.condition,
-                        pests: weatherData.pests.length
+                        pests: weatherData.pests.length,
+                        tokenPreview: userToken.substring(0, 10) + '...'
                     });
                     console.log(`   ✅ Weather sent for ${userCity} (${weatherData.temp}°C)`);
                 } else {
@@ -342,7 +564,7 @@ async function handleCronJob() {
                 }
                 
                 // Small delay to avoid rate limits
-                await new Promise(resolve => setTimeout(resolve, 100));
+                await new Promise(resolve => setTimeout(resolve, 50));
                 
             } catch (userError) {
                 console.error(`   ❌ Error processing user:`, userError.message);
@@ -350,13 +572,38 @@ async function handleCronJob() {
             }
         }
         
+        // Clean up running job marker
+        await runningRef.remove();
+        
+        // Save job results
+        await db.ref('cron_status/last_success').set({
+            timestamp: Date.now(),
+            jobId: jobId,
+            stats: {
+                totalUsers: userCount,
+                activeUsers: activeUsers,
+                successful: successCount,
+                failed: failCount,
+                skipped: skippedCount
+            }
+        });
+        
         const summary = {
+            jobId: jobId,
             totalUsers: userCount,
             activeUsersWithCity: activeUsers,
             processed: successCount + failCount,
             successful: successCount,
             failed: failCount,
+            skipped: skippedCount,
             successRate: activeUsers > 0 ? Math.round((successCount / activeUsers) * 100) : 0,
+            duplicateProtection: {
+                processedUsers: processedUsers.size,
+                processedTokens: processedTokens.size,
+                weatherCacheHits: weatherCache.size,
+                rateLimitEnabled: true,
+                cooldownMinutes: 30
+            },
             timestamp: new Date().toISOString(),
             nextRun: 'in 5 minutes via GitHub Actions'
         };
@@ -367,20 +614,29 @@ async function handleCronJob() {
             success: true,
             summary,
             results: results.slice(0, 5),
-            message: `Processed ${activeUsers} active users, ${successCount} successful`
+            message: `Processed ${activeUsers} active users, ${successCount} successful notifications sent`
         };
         
     } catch (error) {
         console.error('❌ Cron job error:', error);
+        
+        // Clean up running job marker on error
+        try {
+            await db.ref('cron_status/last_run').remove();
+        } catch (cleanupError) {
+            console.error('Error cleaning up job marker:', cleanupError);
+        }
+        
         return {
             success: false,
             error: error.message,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            jobId: jobId
         };
     }
 }
 
-// ==================== EXISTING FUNCTIONS ====================
+// ==================== TEST FUNCTIONS ====================
 async function handleManualTest(userId, city = 'Manila') {
     console.log('🧪 Manual test requested');
     
@@ -423,6 +679,75 @@ async function handleQuickTest(city = 'Manila') {
     };
 }
 
+// ==================== DIAGNOSTIC FUNCTION ====================
+async function diagnoseDuplicateIssue() {
+    console.log('\n🔍 DIAGNOSING DUPLICATE NOTIFICATION ISSUE...');
+    
+    const results = {
+        timestamp: new Date().toISOString(),
+        checks: []
+    };
+    
+    try {
+        // 1. Check user tokens
+        const tokens = await debugTokenStorage();
+        results.checks.push({
+            name: 'User Tokens',
+            status: tokens ? 'found' : 'not_found',
+            count: tokens ? Object.keys(tokens).length : 0
+        });
+        
+        // 2. Check for duplicate tokens
+        await debugUserTokens();
+        
+        // 3. Check for duplicate users
+        await debugDuplicateUsers();
+        
+        // 4. Check cron status
+        const cronStatus = await db.ref('cron_status').once('value');
+        results.checks.push({
+            name: 'Cron Status',
+            status: cronStatus.exists() ? 'exists' : 'not_found',
+            lastRun: cronStatus.val()?.last_run || 'never'
+        });
+        
+        // 5. Sample a few users to check their setup
+        const usersRef = db.ref('users');
+        const usersSnapshot = await usersRef.once('value');
+        const users = usersSnapshot.val();
+        
+        if (users) {
+            const sampleUsers = Object.entries(users).slice(0, 3);
+            results.sampleUsers = sampleUsers.map(([userId, userData]) => ({
+                userId: userId.substring(0, 8) + '...',
+                city: userData?.preferredCity || 'none',
+                hasToken: false // Will be checked below
+            }));
+            
+            // Check tokens for sample users
+            for (let user of results.sampleUsers) {
+                const userId = Object.keys(users).find(key => key.startsWith(user.userId.substring(0, 8)));
+                if (userId) {
+                    const tokenRef = db.ref(`user_tokens/${userId}`);
+                    const tokenSnapshot = await tokenRef.once('value');
+                    user.hasToken = !!tokenSnapshot.val()?.fcmToken;
+                }
+            }
+        }
+        
+        results.summary = 'Diagnostic complete. Check console for detailed debug information.';
+        
+        return results;
+        
+    } catch (error) {
+        console.error('❌ Diagnostic error:', error);
+        return {
+            error: error.message,
+            timestamp: new Date().toISOString()
+        };
+    }
+}
+
 // ==================== MAIN HANDLER ====================
 module.exports = async (req, res) => {
     // CORS headers
@@ -436,7 +761,7 @@ module.exports = async (req, res) => {
         return res.status(200).end();
     }
     
-    console.log(`📨 Request: ${req.method} ${new Date().toISOString()}`);
+    console.log(`\n📨 Request: ${req.method} ${new Date().toISOString()}`);
     
     try {
         // Parse request body
@@ -471,6 +796,10 @@ module.exports = async (req, res) => {
                 const quickResult = await handleQuickTest(city || 'Manila');
                 return res.status(200).json(quickResult);
                 
+            case 'diagnose':
+                const diagnoseResult = await diagnoseDuplicateIssue();
+                return res.status(200).json(diagnoseResult);
+                
             case 'status':
                 // Check database for user cities
                 const usersRef = db.ref('users');
@@ -481,6 +810,11 @@ module.exports = async (req, res) => {
                     user.preferredCity && user.preferredCity !== 'Manila' && user.preferredCity !== ''
                 ).length;
                 
+                // Get last cron run
+                const lastRunRef = db.ref('cron_status/last_success');
+                const lastRunSnapshot = await lastRunRef.once('value');
+                const lastRun = lastRunSnapshot.val();
+                
                 return res.status(200).json({
                     service: 'MangoTango Weather Cron',
                     status: 'running',
@@ -488,17 +822,26 @@ module.exports = async (req, res) => {
                     firebase: admin.apps.length > 0 ? 'connected' : 'disconnected',
                     scheduler: 'GitHub Actions',
                     schedule: 'Every 5 minutes',
+                    duplicateProtection: {
+                        enabled: true,
+                        features: [
+                            '30-minute cooldown per user',
+                            'Token deduplication',
+                            'User deduplication',
+                            'Weather caching',
+                            'Job overlap prevention'
+                        ]
+                    },
                     stats: {
                         totalUsers: Object.keys(users).length,
                         usersWithSelectedCity: usersWithCity,
                         usersDefaultManila: Object.keys(users).length - usersWithCity
                     },
-                    filters: {
-                        requiresCity: true,
-                        requiresRecentToken: 'within 2 hours',
-                        autoCleanup: 'tokens older than 24 hours',
-                        skipsInactiveUsers: true
-                    }
+                    lastRun: lastRun ? {
+                        timestamp: new Date(lastRun.timestamp).toISOString(),
+                        jobId: lastRun.jobId,
+                        successful: lastRun.stats?.successful || 0
+                    } : 'Never'
                 });
                 
             default:
@@ -511,16 +854,24 @@ module.exports = async (req, res) => {
                             'Pest alerts based on conditions',
                             'Farming advice',
                             'Active user filtering',
+                            'Duplicate notification prevention',
+                            '30-minute cooldown per user',
                             'Auto token cleanup'
                         ],
-                        timestamp: new Date().toISOString(),
-                        note: 'Only sends to users who are active (FCM token updated in last 2 hours)'
+                        endpoints: [
+                            'GET / - This info',
+                            'POST {action: "test", userId: "..."} - Send test',
+                            'POST {action: "quick-test"} - Weather only',
+                            'POST {action: "diagnose"} - Debug duplicates',
+                            'POST {action: "status"} - Service status'
+                        ],
+                        timestamp: new Date().toISOString()
                     });
                 }
                 
                 return res.status(200).json({
                     message: 'Weather cron service is running',
-                    filters: 'Only sends to active users with recent FCM tokens',
+                    duplicateProtection: 'Enabled (30-minute cooldown, token/user deduplication)',
                     timestamp: new Date().toISOString()
                 });
         }

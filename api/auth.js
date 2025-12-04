@@ -60,10 +60,14 @@ module.exports = async (req, res) => {
             await handleRegister(requestData, res);
             break;
           
+          case 'cleanup-duplicates':
+            await handleCleanupDuplicates(requestData, res);
+            break;
+          
           default:
             return res.status(400).json({
               success: false,
-              message: 'Invalid action. Supported actions: login, register'
+              message: 'Invalid action. Supported actions: login, register, cleanup-duplicates'
             });
         }
 
@@ -86,7 +90,127 @@ module.exports = async (req, res) => {
   }
 };
 
-// LOGIN - Handle user login
+// ==================== HELPER FUNCTIONS ====================
+
+async function findUserByEmail(email) {
+  try {
+    // Normalize email
+    const normalizedEmail = email.toLowerCase().trim();
+    
+    // First check if email exists in Firebase Auth
+    try {
+      const authUser = await auth.getUserByEmail(normalizedEmail);
+      return {
+        exists: true,
+        userId: authUser.uid,
+        source: 'auth',
+        userRecord: authUser
+      };
+    } catch (authError) {
+      // Email not in Firebase Auth, check database
+      const usersRef = db.ref('users');
+      const snapshot = await usersRef.once('value');
+      const users = snapshot.val();
+      
+      if (users) {
+        for (const [userId, userData] of Object.entries(users)) {
+          if (userData?.email && userData.email.toLowerCase().trim() === normalizedEmail) {
+            return {
+              exists: true,
+              userId: userId,
+              source: 'database',
+              userData: userData
+            };
+          }
+        }
+      }
+      
+      return { exists: false };
+    }
+  } catch (error) {
+    console.error('findUserByEmail error:', error);
+    return { exists: false, error: error.message };
+  }
+}
+
+async function mergeDuplicateAccounts(mainUserId, duplicateUserId) {
+  console.log(`Merging ${duplicateUserId.substring(0, 8)}... into ${mainUserId.substring(0, 8)}...`);
+  
+  try {
+    // Get data from duplicate account
+    const duplicateUserRef = db.ref(`users/${duplicateUserId}`);
+    const duplicateUserSnapshot = await duplicateUserRef.once('value');
+    const duplicateUserData = duplicateUserSnapshot.val();
+    
+    const duplicateTokenRef = db.ref(`user_tokens/${duplicateUserId}`);
+    const duplicateTokenSnapshot = await duplicateTokenRef.once('value');
+    const duplicateTokenData = duplicateTokenSnapshot.val();
+    
+    // Get main account data
+    const mainUserRef = db.ref(`users/${mainUserId}`);
+    const mainUserSnapshot = await mainUserRef.once('value');
+    const mainUserData = mainUserSnapshot.val() || {};
+    
+    const mainTokenRef = db.ref(`user_tokens/${mainUserId}`);
+    const mainTokenSnapshot = await mainTokenRef.once('value');
+    const mainTokenData = mainTokenSnapshot.val();
+    
+    // Merge user data (keep non-empty fields from duplicate)
+    const mergedUserData = { ...mainUserData };
+    
+    // Fields to merge (prefer duplicate's data if main is empty)
+    const fieldsToMerge = ['name', 'address', 'language', 'age', 'phonenumber', 'profileImage', 'preferredCity'];
+    
+    fieldsToMerge.forEach(field => {
+      if (duplicateUserData?.[field] && (!mainUserData[field] || mainUserData[field] === '')) {
+        mergedUserData[field] = duplicateUserData[field];
+      }
+    });
+    
+    // Update main user data
+    await mainUserRef.update({
+      ...mergedUserData,
+      mergedFrom: duplicateUserId,
+      mergedAt: Date.now(),
+      updatedAt: Date.now()
+    });
+    
+    // Merge tokens (keep the most recent token)
+    if (duplicateTokenData?.fcmToken) {
+      const shouldReplaceToken = !mainTokenData?.fcmToken || 
+        (duplicateTokenData.updatedAt > (mainTokenData.updatedAt || 0));
+      
+      if (shouldReplaceToken) {
+        await mainTokenRef.set({
+          fcmToken: duplicateTokenData.fcmToken,
+          updatedAt: duplicateTokenData.updatedAt || Date.now(),
+          mergedFrom: duplicateUserId
+        });
+      }
+    }
+    
+    // Delete duplicate account
+    await duplicateUserRef.remove();
+    await duplicateTokenRef.remove();
+    
+    // Try to delete from Firebase Auth too
+    try {
+      await auth.deleteUser(duplicateUserId);
+    } catch (authError) {
+      // User might not exist in Auth, that's fine
+      console.log('Note: Could not delete duplicate from Auth:', authError.message);
+    }
+    
+    console.log(`✅ Successfully merged accounts`);
+    return { success: true, mainUserId, duplicateUserId };
+    
+  } catch (error) {
+    console.error('Merge error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// ==================== LOGIN FUNCTION ====================
 async function handleLogin(requestData, res) {
   try {
     const { email, password } = requestData;
@@ -100,7 +224,17 @@ async function handleLogin(requestData, res) {
 
     console.log('AUTH_API: Login attempt for email:', email);
 
-    // Step 1: Verify password using Firebase REST API
+    // Step 1: Check for duplicate accounts BEFORE login
+    const emailCheck = await findUserByEmail(email);
+    
+    if (emailCheck.exists && emailCheck.source === 'database' && emailCheck.userId) {
+      // Email exists in database but not in Auth - this is an orphaned account
+      console.log('AUTH_API: Found orphaned account in database:', emailCheck.userId);
+      
+      // We'll handle this after successful auth
+    }
+
+    // Step 2: Verify password using Firebase REST API
     const firebaseResponse = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${process.env.FIREBASE_API_KEY}`, {
       method: 'POST',
       headers: {
@@ -145,19 +279,56 @@ async function handleLogin(requestData, res) {
       }
     }
 
-    const userId = authResult.localId;
+    const loggedInUserId = authResult.localId;
 
-    // Step 2: Get user data from Realtime Database
-    const userSnapshot = await db.ref(`users/${userId}`).once('value');
+    // Step 3: Check for and merge duplicate accounts
+    const normalizedEmail = email.toLowerCase().trim();
+    const usersRef = db.ref('users');
+    const snapshot = await usersRef.once('value');
+    const users = snapshot.val();
+    
+    let duplicateUserIds = [];
+    
+    if (users) {
+      for (const [userId, userData] of Object.entries(users)) {
+        if (userId !== loggedInUserId && 
+            userData?.email && 
+            userData.email.toLowerCase().trim() === normalizedEmail) {
+          duplicateUserIds.push(userId);
+        }
+      }
+    }
+    
+    // Merge any duplicates found
+    if (duplicateUserIds.length > 0) {
+      console.log(`AUTH_API: Found ${duplicateUserIds.length} duplicate accounts for ${email}`);
+      
+      for (const duplicateUserId of duplicateUserIds) {
+        await mergeDuplicateAccounts(loggedInUserId, duplicateUserId);
+      }
+    }
+
+    // Step 4: Get user data from Realtime Database
+    const userSnapshot = await db.ref(`users/${loggedInUserId}`).once('value');
     let userData = userSnapshot.val();
 
     console.log('AUTH_API: User data from database:', userData);
 
+    // If no user data exists in database, create it
     if (!userData) {
-      return res.status(404).json({
-        success: false,
-        message: 'User data not found'
-      });
+      console.log('AUTH_API: No user data found, creating default profile');
+      
+      // Get user info from Firebase Auth
+      const authUser = await auth.getUser(loggedInUserId);
+      
+      userData = {
+        name: authUser.displayName || email.split('@')[0] || 'User',
+        email: email,
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      };
+      
+      await db.ref(`users/${loggedInUserId}`).set(userData);
     }
 
     // 🔥 CRITICAL FIX: Ensure user has a proper name
@@ -171,7 +342,7 @@ async function handleLogin(requestData, res) {
       userName = email.split('@')[0] || 'App User';
       
       // Update the database with the proper name
-      await db.ref(`users/${userId}`).update({
+      await db.ref(`users/${loggedInUserId}`).update({
         name: userName,
         updatedAt: Date.now()
       });
@@ -184,12 +355,13 @@ async function handleLogin(requestData, res) {
 
     console.log('AUTH_API: Login successful for user:', userName);
 
-    // Step 3: Return success response with user data
+    // Step 5: Return success response with user data
     return res.status(200).json({
       success: true,
       message: 'Login successful',
+      mergedAccounts: duplicateUserIds.length,
       user: {
-        userId: userId,
+        userId: loggedInUserId,
         idToken: authResult.idToken,
         refreshToken: authResult.refreshToken,
         name: userName,
@@ -198,7 +370,8 @@ async function handleLogin(requestData, res) {
         language: userData.language || '',
         age: userData.age || '',
         phonenumber: userData.phonenumber || '',
-        profileImage: userData.profileImage || ''
+        profileImage: userData.profileImage || '',
+        preferredCity: userData.preferredCity || ''
       }
     });
 
@@ -212,7 +385,7 @@ async function handleLogin(requestData, res) {
   }
 }
 
-// REGISTER - Handle user registration
+// ==================== REGISTER FUNCTION ====================
 async function handleRegister(requestData, res) {
   try {
     const { 
@@ -250,20 +423,26 @@ async function handleRegister(requestData, res) {
       });
     }
 
-    // Check if email already exists
-    try {
-      await auth.getUserByEmail(email);
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Check if email already exists in DATABASE (not just Auth)
+    const emailCheck = await findUserByEmail(normalizedEmail);
+    
+    if (emailCheck.exists) {
+      console.log('AUTH_API: Email already exists in system:', emailCheck);
+      
+      // If email exists but user wants to "re-register", suggest login
       return res.status(400).json({
         success: false,
-        message: 'Email already registered'
+        message: 'Email already registered. Please login instead.',
+        existingUserId: emailCheck.userId,
+        canLogin: true
       });
-    } catch (error) {
-      // Email doesn't exist, continue with registration
     }
 
     // Create user in Firebase Auth
     const userRecord = await auth.createUser({
-      email: email,
+      email: normalizedEmail,
       password: password,
       displayName: name,
       emailVerified: false
@@ -276,10 +455,11 @@ async function handleRegister(requestData, res) {
       name: name || '',
       address: address || '',
       language: language || '',
-      email: email || '',
+      email: normalizedEmail, // Store normalized email
       age: age || '',
       phonenumber: phone || '',
       profileImage: '',
+      preferredCity: '', // Add this field
       createdAt: Date.now(),
       updatedAt: Date.now()
     };
@@ -293,7 +473,7 @@ async function handleRegister(requestData, res) {
       message: 'Registration successful!',
       user: {
         userId: userId,
-        email: email,
+        email: normalizedEmail,
         name: name,
         address: address,
         language: language,
@@ -330,6 +510,123 @@ async function handleRegister(requestData, res) {
     return res.status(500).json({
       success: false,
       message: 'Registration failed',
+      error: error.message
+    });
+  }
+}
+
+// ==================== CLEANUP FUNCTION ====================
+async function handleCleanupDuplicates(requestData, res) {
+  try {
+    const { secret, dryRun = true } = requestData;
+    
+    // Simple security check
+    if (secret !== process.env.ADMIN_SECRET) {
+      return res.status(403).json({
+        success: false,
+        message: 'Unauthorized'
+      });
+    }
+    
+    console.log('AUTH_API: Starting duplicate cleanup, dryRun:', dryRun);
+    
+    const usersRef = db.ref('users');
+    const snapshot = await usersRef.once('value');
+    const users = snapshot.val();
+    
+    if (!users) {
+      return res.status(200).json({
+        success: true,
+        message: 'No users found',
+        results: []
+      });
+    }
+    
+    // Group by email
+    const emailGroups = {};
+    Object.entries(users).forEach(([userId, userData]) => {
+      if (userData?.email) {
+        const email = userData.email.toLowerCase().trim();
+        if (!emailGroups[email]) emailGroups[email] = [];
+        emailGroups[email].push({ userId, userData });
+      }
+    });
+    
+    const results = [];
+    let accountsRemoved = 0;
+    
+    // Process duplicates
+    for (const [email, userList] of Object.entries(emailGroups)) {
+      if (userList.length > 1) {
+        console.log(`Processing ${email}: ${userList.length} accounts`);
+        
+        // Find the "main" account (most recent or with auth record)
+        let mainAccount = null;
+        let duplicateAccounts = [];
+        
+        // Try to find account that exists in Firebase Auth
+        for (const user of userList) {
+          try {
+            await auth.getUser(user.userId);
+            if (!mainAccount) {
+              mainAccount = user;
+            } else {
+              duplicateAccounts.push(user);
+            }
+          } catch (authError) {
+            // Not in Auth, check for most recently updated
+            duplicateAccounts.push(user);
+          }
+        }
+        
+        // If no auth account found, use most recently updated as main
+        if (!mainAccount) {
+          userList.sort((a, b) => {
+            const timeA = a.userData.updatedAt || a.userData.createdAt || 0;
+            const timeB = b.userData.updatedAt || b.userData.createdAt || 0;
+            return timeB - timeA; // Newest first
+          });
+          
+          mainAccount = userList[0];
+          duplicateAccounts = userList.slice(1);
+        } else {
+          // Already have main account, ensure duplicates array is correct
+          duplicateAccounts = userList.filter(u => u.userId !== mainAccount.userId);
+        }
+        
+        if (duplicateAccounts.length > 0) {
+          if (!dryRun) {
+            // Actually merge duplicates
+            for (const duplicate of duplicateAccounts) {
+              await mergeDuplicateAccounts(mainAccount.userId, duplicate.userId);
+              accountsRemoved++;
+            }
+          }
+          
+          results.push({
+            email: email,
+            mainAccount: mainAccount.userId.substring(0, 8) + '...',
+            duplicateCount: duplicateAccounts.length,
+            duplicateIds: duplicateAccounts.map(u => u.userId.substring(0, 8) + '...'),
+            action: dryRun ? 'would_merge' : 'merged'
+          });
+        }
+      }
+    }
+    
+    return res.status(200).json({
+      success: true,
+      dryRun: dryRun,
+      totalEmails: Object.keys(emailGroups).length,
+      duplicateEmails: results.length,
+      accountsRemoved: accountsRemoved,
+      results: results
+    });
+    
+  } catch (error) {
+    console.error('Cleanup error:', error);
+    return res.status(500).json({
+      success: false,
       error: error.message
     });
   }

@@ -292,78 +292,103 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
     try {
         console.log(`   📤 Sending to user: ${userId.substring(0, 8)}... for ${city}`);
         
-        // Get user's FCM token
-        const tokenRef = db.ref(`user_tokens/${userId}`);
-        const tokenSnapshot = await tokenRef.once('value');
-        const tokenData = tokenSnapshot.val();
+        // Get user's devices and tokens
+        const devicesRef = db.ref(`user_tokens/${userId}/devices`);
+        const devicesSnapshot = await devicesRef.once('value');
+        const devices = devicesSnapshot.val();
         
-        if (!tokenData || !tokenData.fcmToken) {
-            console.log(`   ❌ No FCM token for user`);
+        if (!devices) {
+            console.log(`   ❌ No devices/tokens found for user`);
             return false;
         }
         
-        const { temp, condition, humidity, windSpeed, pests, advice, fetchedAt } = weatherData;
+        let sentCount = 0;
+        const deviceEntries = Object.entries(devices);
         
-        // Create notification message
-        const title = isTest 
-            ? `🧪 Weather Test: ${city}` 
-            : `🌤️ Weather Update: ${city}`;
+        console.log(`   📱 Found ${deviceEntries.length} device(s) for user`);
         
-        // Create detailed message
-        const weatherMessage = `🌡️ ${temp}°C | ${condition}\n💧 ${humidity}% | 💨 ${windSpeed}m/s\n⏰ ${fetchedAt}`;
-        
-        const pestMessage = pests.length > 0 
-            ? `\n\n⚠️ Pest Alert:\n${pests.map(p => `• ${p}`).join('\n')}`
-            : '\n\n✅ No major pest threats';
-        
-        const fullMessage = `${weatherMessage}${pestMessage}\n\n💡 ${advice}`;
-        
-        // Create notification summary
-        const notificationBody = createNotificationSummary(temp, condition, pests, advice);
-        
-        // Notification payload
-        const messagePayload = {
-            token: tokenData.fcmToken,
-            notification: {
-                title: title,
-                body: notificationBody
-            },
-            data: {
-                type: 'weather',
-                city: city,
-                temperature: temp.toString(),
-                condition: condition,
-                humidity: humidity.toString(),
-                wind_speed: windSpeed.toString(),
-                pests: JSON.stringify(pests),
-                advice: advice,
-                timestamp: new Date().toISOString(),
-                message: fullMessage,
-                test: isTest.toString(),
-                source: 'github-actions-cron',
-                userId: userId // Add user ID to track
-            },
-            android: {
-                priority: 'high'
+        // Send to each active device
+        for (const [deviceId, deviceData] of deviceEntries) {
+            try {
+                if (!deviceData?.fcmToken) {
+                    console.log(`   ⚠️ No token for device ${deviceId.substring(0, 8)}...`);
+                    continue;
+                }
+                
+                // Check if device is active (logged in within last 48 hours)
+                const lastLoginTime = deviceData.loggedInAt || deviceData.updatedAt || 0;
+                const hoursSinceLogin = (Date.now() - lastLoginTime) / (1000 * 60 * 60);
+                
+                if (hoursSinceLogin > 48) {
+                    console.log(`   ⏸️ Device ${deviceId.substring(0, 8)}... inactive (${Math.round(hoursSinceLogin)}h ago)`);
+                    continue;
+                }
+                
+                // Prepare notification
+                const { temp, condition, humidity, windSpeed, pests, advice, fetchedAt } = weatherData;
+                
+                const title = isTest 
+                    ? `🧪 Weather Test: ${city}` 
+                    : `🌤️ Weather Update: ${city}`;
+                
+                const notificationBody = createNotificationSummary(temp, condition, pests, advice);
+                
+                // Notification payload with device info
+                const messagePayload = {
+                    token: deviceData.fcmToken,
+                    notification: {
+                        title: title,
+                        body: notificationBody
+                    },
+                    data: {
+                        type: 'weather',
+                        city: city,
+                        temperature: temp.toString(),
+                        condition: condition,
+                        humidity: humidity.toString(),
+                        wind_speed: windSpeed.toString(),
+                        pests: JSON.stringify(pests),
+                        advice: advice,
+                        timestamp: new Date().toISOString(),
+                        userId: userId,
+                        deviceId: deviceId,
+                        test: isTest.toString(),
+                        source: 'github-actions-cron'
+                    },
+                    android: {
+                        priority: 'high'
+                    }
+                };
+                
+                console.log(`   📱 Sending to device ${deviceId.substring(0, 8)}...`);
+                
+                try {
+                    const response = await admin.messaging().send(messagePayload);
+                    sentCount++;
+                    console.log(`   ✅ Sent to device ${deviceId.substring(0, 8)}...`);
+                } catch (sendError) {
+                    console.error(`   ❌ Error sending to device ${deviceId.substring(0, 8)}...:`, sendError.message);
+                    
+                    // Remove invalid token for this device
+                    if (sendError.code === 'messaging/registration-token-not-registered') {
+                        await db.ref(`user_tokens/${userId}/devices/${deviceId}`).remove();
+                        console.log(`   🗑️ Removed invalid device token`);
+                    }
+                }
+                
+                // Small delay between devices
+                await new Promise(resolve => setTimeout(resolve, 100));
+                
+            } catch (deviceError) {
+                console.error(`   ❌ Device ${deviceId.substring(0, 8)}... error:`, deviceError.message);
             }
-        };
-        
-        console.log(`   🚀 Sending FCM notification`);
-        
-        const response = await admin.messaging().send(messagePayload);
-        console.log(`   ✅ Sent successfully`);
-        
-        return true;
-        
-    } catch (error) {
-        console.error(`   ❌ Error sending:`, error.message);
-        
-        // Remove invalid token
-        if (error.code === 'messaging/registration-token-not-registered') {
-            await db.ref(`user_tokens/${userId}`).remove();
-            console.log(`   🗑️ Removed invalid token`);
         }
         
+        console.log(`   📊 Sent to ${sentCount} out of ${deviceEntries.length} device(s)`);
+        return sentCount > 0;
+        
+    } catch (error) {
+        console.error(`   ❌ Error:`, error.message);
         return false;
     }
 }

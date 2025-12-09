@@ -21,6 +21,172 @@ try {
 
 const db = admin.database();
 
+// ==================== CLEANUP FUNCTIONS ====================
+async function cleanDuplicateTokens() {
+    console.log('\n🧹 CLEANING DUPLICATE TOKENS...');
+    
+    const tokensRef = db.ref('user_tokens');
+    const snapshot = await tokensRef.once('value');
+    const tokens = snapshot.val();
+    
+    if (!tokens) {
+        console.log('   ✅ No tokens found to clean');
+        return { cleaned: 0, total: 0 };
+    }
+    
+    const totalTokens = Object.keys(tokens).length;
+    console.log(`   📊 Found ${totalTokens} token entries`);
+    
+    // Find all tokens and their users
+    const tokenToUsers = {};
+    const userTokenInfo = {};
+    
+    Object.entries(tokens).forEach(([userId, tokenData]) => {
+        if (tokenData?.fcmToken) {
+            const token = tokenData.fcmToken;
+            const updatedAt = tokenData.updatedAt || 0;
+            
+            if (!tokenToUsers[token]) tokenToUsers[token] = [];
+            tokenToUsers[token].push({ userId, updatedAt });
+            
+            userTokenInfo[userId] = {
+                token: token,
+                updatedAt: updatedAt,
+                hasDevices: !!tokenData.devices,
+                deviceCount: tokenData.devices ? Object.keys(tokenData.devices).length : 0
+            };
+        }
+    });
+    
+    let cleanedCount = 0;
+    let duplicateTokens = 0;
+    
+    // For each token with multiple users, keep only the most recent
+    for (const [token, users] of Object.entries(tokenToUsers)) {
+        if (users.length > 1) {
+            duplicateTokens++;
+            console.log(`\n   ⚠️ Token ${token.substring(0, 20)}... shared by ${users.length} users:`);
+            
+            users.forEach((user, index) => {
+                const dateStr = user.updatedAt ? new Date(user.updatedAt).toLocaleString() : 'Never';
+                console.log(`      ${index + 1}. ${user.userId.substring(0, 8)}... - Updated: ${dateStr}`);
+            });
+            
+            // Sort by most recent update (newest first)
+            users.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+            
+            // Keep the most recent user
+            const keepUserId = users[0].userId;
+            const keepTime = users[0].updatedAt || 0;
+            console.log(`   ✅ Keeping ${keepUserId.substring(0, 8)}... (most recent: ${new Date(keepTime).toLocaleString()})`);
+            
+            // Remove from other users
+            for (let i = 1; i < users.length; i++) {
+                const removeUserId = users[i].userId;
+                const removeTime = users[i].updatedAt || 0;
+                console.log(`   🗑️ Removing from ${removeUserId.substring(0, 8)}... (older: ${new Date(removeTime).toLocaleString()})`);
+                
+                // Remove the entire token entry for this user
+                await db.ref(`user_tokens/${removeUserId}`).remove();
+                cleanedCount++;
+            }
+        }
+    }
+    
+    if (duplicateTokens === 0) {
+        console.log('   ✅ No duplicate tokens found');
+    } else {
+        console.log(`\n   📊 Summary:`);
+        console.log(`      Total token entries: ${totalTokens}`);
+        console.log(`      Duplicate tokens found: ${duplicateTokens}`);
+        console.log(`      Cleaned entries: ${cleanedCount}`);
+        console.log(`      Remaining entries: ${totalTokens - cleanedCount}`);
+    }
+    
+    return {
+        cleaned: cleanedCount,
+        total: totalTokens,
+        duplicateTokens: duplicateTokens,
+        remaining: totalTokens - cleanedCount
+    };
+}
+
+async function cleanEmptyTokenEntries() {
+    console.log('\n🧹 CLEANING EMPTY TOKEN ENTRIES...');
+    
+    const tokensRef = db.ref('user_tokens');
+    const snapshot = await tokensRef.once('value');
+    const tokens = snapshot.val();
+    
+    if (!tokens) {
+        console.log('   ✅ No token entries found');
+        return { cleaned: 0 };
+    }
+    
+    let cleanedCount = 0;
+    
+    for (const [userId, tokenData] of Object.entries(tokens)) {
+        // Check if entry is empty or has no token
+        if (!tokenData || 
+            (!tokenData.fcmToken && 
+             (!tokenData.devices || Object.keys(tokenData.devices).length === 0))) {
+            
+            console.log(`   🗑️ Removing empty entry for ${userId.substring(0, 8)}...`);
+            await db.ref(`user_tokens/${userId}`).remove();
+            cleanedCount++;
+        }
+    }
+    
+    if (cleanedCount === 0) {
+        console.log('   ✅ No empty token entries found');
+    } else {
+        console.log(`   📊 Cleaned ${cleanedCount} empty entries`);
+    }
+    
+    return { cleaned: cleanedCount };
+}
+
+async function cleanInvalidCityUsers() {
+    console.log('\n🧹 CLEANING USERS WITH INVALID CITIES...');
+    
+    const usersRef = db.ref('users');
+    const snapshot = await usersRef.once('value');
+    const users = snapshot.val();
+    
+    if (!users) {
+        console.log('   ✅ No users found');
+        return { cleaned: 0 };
+    }
+    
+    let cleanedCount = 0;
+    const invalidCities = ['undefined', 'null', ''];
+    
+    for (const [userId, userData] of Object.entries(users)) {
+        if (userData && userData.preferredCity) {
+            const city = userData.preferredCity;
+            if (invalidCities.includes(city) || city.trim() === '') {
+                console.log(`   🗑️ User ${userId.substring(0, 8)}... has invalid city: "${city}"`);
+                
+                // Remove their token if exists
+                await db.ref(`user_tokens/${userId}`).remove();
+                
+                // Remove city from user (keep user record, just clear city)
+                await db.ref(`users/${userId}/preferredCity`).remove();
+                
+                cleanedCount++;
+            }
+        }
+    }
+    
+    if (cleanedCount === 0) {
+        console.log('   ✅ No users with invalid cities found');
+    } else {
+        console.log(`   📊 Cleaned ${cleanedCount} users with invalid cities`);
+    }
+    
+    return { cleaned: cleanedCount };
+}
+
 // ==================== DEBUG FUNCTIONS ====================
 async function debugTokenStorage() {
     try {
@@ -37,7 +203,9 @@ async function debugTokenStorage() {
                     age: tokenData?.updatedAt || tokenData?.timestamp ? 
                         `${Math.round((Date.now() - (tokenData.updatedAt || tokenData.timestamp || 0))/1000/60)} minutes ago` : 
                         'Unknown',
-                    tokenPreview: tokenData?.fcmToken?.substring(0, 15) + '...'
+                    tokenPreview: tokenData?.fcmToken?.substring(0, 15) + '...',
+                    hasDevices: !!tokenData?.devices,
+                    deviceCount: tokenData?.devices ? Object.keys(tokenData.devices).length : 0
                 });
             });
         } else {
@@ -527,7 +695,7 @@ async function migrateToDeviceFormat(userId, token) {
     }
 }
 
-// ==================== UPDATED MAIN CRON FUNCTION (NO COOLDOWN) ====================
+// ==================== UPDATED MAIN CRON FUNCTION ====================
 async function handleCronJob() {
     const jobId = Date.now();
     console.log(`\n⏰ CRON JOB STARTED - Job ID: ${jobId}`);
@@ -561,7 +729,13 @@ async function handleCronJob() {
             status: 'running'
         });
         
-        // Debug token storage first
+        // Run cleanup BEFORE processing
+        console.log('\n🧹 RUNNING PRE-JOB CLEANUP...');
+        const cleanupResult = await cleanDuplicateTokens();
+        await cleanEmptyTokenEntries();
+        await cleanInvalidCityUsers();
+        
+        // Debug token storage after cleanup
         await debugTokenStorage();
         await debugUserTokens();
         await debugDuplicateUsers();
@@ -633,7 +807,7 @@ async function handleCronJob() {
                 const userCity = userData.preferredCity;
                 console.log(`   📍 User's city: ${userCity}`);
                 
-                // 4. Check user's FCM token for duplicates
+                // 4. Check user's FCM token
                 const tokenRef = db.ref(`user_tokens/${userId}`);
                 const tokenSnapshot = await tokenRef.once('value');
                 const tokenData = tokenSnapshot.val();
@@ -644,11 +818,12 @@ async function handleCronJob() {
                     continue;
                 }
                 
-                // Check if token was already used in this run (shared tokens)
                 const userToken = tokenData.fcmToken;
+                
+                // Check if token was already used in this run (after cleanup, this should be rare)
                 if (processedTokens.has(userToken)) {
                     console.log(`   ⚠️ Token already used for another user in this run`);
-                    console.log(`   ℹ️ This might be a shared device or duplicate account`);
+                    console.log(`   ℹ️ This might indicate a cleanup issue`);
                     skippedCount++;
                     continue;
                 }
@@ -679,13 +854,13 @@ async function handleCronJob() {
                     continue;
                 }
                 
-                // 6. Send notification (NO COOLDOWN CHECK)
+                // 6. Send notification
                 const success = await sendWeatherNotificationToUser(userId, userCity, weatherData, false);
                 
                 if (success) {
                     successCount++;
                     
-                    // Update last notification time (for tracking only, not for cooldown)
+                    // Update last notification time
                     await db.ref(`last_notification/${userId}`).set({
                         timestamp: Date.now(),
                         city: userCity,
@@ -728,7 +903,8 @@ async function handleCronJob() {
                 successful: successCount,
                 failed: failCount,
                 skipped: skippedCount
-            }
+            },
+            cleanup: cleanupResult
         });
         
         const summary = {
@@ -744,9 +920,10 @@ async function handleCronJob() {
                 processedUsers: processedUsers.size,
                 processedTokens: processedTokens.size,
                 weatherCacheHits: weatherCache.size,
-                rateLimitEnabled: false, // COOLDOWN DISABLED
+                rateLimitEnabled: false,
                 cooldownMinutes: 0
             },
+            cleanup: cleanupResult,
             timestamp: new Date().toISOString(),
             nextRun: 'in 5 minutes via GitHub Actions'
         };
@@ -822,6 +999,59 @@ async function handleQuickTest(city = 'Manila') {
     };
 }
 
+// ==================== CLEANUP ENDPOINT ====================
+async function runFullCleanup() {
+    console.log('\n🧹 RUNNING FULL CLEANUP...');
+    
+    const results = {
+        timestamp: new Date().toISOString(),
+        steps: []
+    };
+    
+    try {
+        // Step 1: Clean duplicate tokens
+        console.log('\n1️⃣ Cleaning duplicate tokens...');
+        const tokenResult = await cleanDuplicateTokens();
+        results.steps.push({
+            name: 'Duplicate Tokens',
+            result: tokenResult
+        });
+        
+        // Step 2: Clean empty entries
+        console.log('\n2️⃣ Cleaning empty entries...');
+        const emptyResult = await cleanEmptyTokenEntries();
+        results.steps.push({
+            name: 'Empty Entries',
+            result: emptyResult
+        });
+        
+        // Step 3: Clean invalid cities
+        console.log('\n3️⃣ Cleaning invalid cities...');
+        const cityResult = await cleanInvalidCityUsers();
+        results.steps.push({
+            name: 'Invalid Cities',
+            result: cityResult
+        });
+        
+        // Step 4: Debug current state
+        console.log('\n4️⃣ Debugging current state...');
+        await debugTokenStorage();
+        await debugUserTokens();
+        await debugDuplicateUsers();
+        
+        results.summary = 'Full cleanup completed successfully';
+        results.success = true;
+        
+        return results;
+        
+    } catch (error) {
+        console.error('❌ Cleanup error:', error);
+        results.success = false;
+        results.error = error.message;
+        return results;
+    }
+}
+
 // ==================== DIAGNOSTIC FUNCTION ====================
 async function diagnoseDuplicateIssue() {
     console.log('\n🔍 DIAGNOSING DUPLICATE NOTIFICATION ISSUE...');
@@ -853,30 +1083,6 @@ async function diagnoseDuplicateIssue() {
             status: cronStatus.exists() ? 'exists' : 'not_found',
             lastRun: cronStatus.val()?.last_run || 'never'
         });
-        
-        // 5. Sample a few users to check their setup
-        const usersRef = db.ref('users');
-        const usersSnapshot = await usersRef.once('value');
-        const users = usersSnapshot.val();
-        
-        if (users) {
-            const sampleUsers = Object.entries(users).slice(0, 3);
-            results.sampleUsers = sampleUsers.map(([userId, userData]) => ({
-                userId: userId.substring(0, 8) + '...',
-                city: userData?.preferredCity || 'none',
-                hasToken: false // Will be checked below
-            }));
-            
-            // Check tokens for sample users
-            for (let user of results.sampleUsers) {
-                const userId = Object.keys(users).find(key => key.startsWith(user.userId.substring(0, 8)));
-                if (userId) {
-                    const tokenRef = db.ref(`user_tokens/${userId}`);
-                    const tokenSnapshot = await tokenRef.once('value');
-                    user.hasToken = !!tokenSnapshot.val()?.fcmToken;
-                }
-            }
-        }
         
         results.summary = 'Diagnostic complete. Check console for detailed debug information.';
         
@@ -943,6 +1149,28 @@ module.exports = async (req, res) => {
                 const diagnoseResult = await diagnoseDuplicateIssue();
                 return res.status(200).json(diagnoseResult);
                 
+            case 'cleanup':
+                // Check secret for cleanup operations
+                if (secret !== process.env.CRON_SECRET) {
+                    return res.status(401).json({ error: 'Unauthorized - secret required' });
+                }
+                const cleanupResult = await runFullCleanup();
+                return res.status(200).json(cleanupResult);
+                
+            case 'fix-issue':
+                // Combined cleanup and diagnose
+                if (secret !== process.env.CRON_SECRET) {
+                    return res.status(401).json({ error: 'Unauthorized - secret required' });
+                }
+                console.log('🛠️ Running combined fix...');
+                const fixResult = await runFullCleanup();
+                const diagnoseAfterFix = await diagnoseDuplicateIssue();
+                return res.status(200).json({
+                    cleanup: fixResult,
+                    diagnosis: diagnoseAfterFix,
+                    message: 'Fix applied successfully'
+                });
+                
             case 'status':
                 // Check database for user cities
                 const usersRef = db.ref('users');
@@ -965,16 +1193,13 @@ module.exports = async (req, res) => {
                     firebase: admin.apps.length > 0 ? 'connected' : 'disconnected',
                     scheduler: 'GitHub Actions',
                     schedule: 'Every 5 minutes',
-                    duplicateProtection: {
-                        enabled: true,
-                        features: [
-                            'Token deduplication',
-                            'User deduplication',
-                            'Weather caching',
-                            'Job overlap prevention',
-                            'COOLDOWN DISABLED - Users get notifications every run'
-                        ]
-                    },
+                    features: [
+                        'Token deduplication',
+                        'Automatic cleanup',
+                        'Weather caching',
+                        'Job overlap prevention',
+                        'COOLDOWN DISABLED'
+                    ],
                     stats: {
                         totalUsers: Object.keys(users).length,
                         usersWithSelectedCity: usersWithCity,
@@ -997,7 +1222,7 @@ module.exports = async (req, res) => {
                             'Pest alerts based on conditions',
                             'Farming advice',
                             'Active user filtering',
-                            'Duplicate notification prevention',
+                            'Automatic token cleanup',
                             'NO COOLDOWN - Notifications every run',
                             'Auto token cleanup'
                         ],
@@ -1006,6 +1231,8 @@ module.exports = async (req, res) => {
                             'POST {action: "test", userId: "..."} - Send test',
                             'POST {action: "quick-test"} - Weather only',
                             'POST {action: "diagnose"} - Debug duplicates',
+                            'POST {action: "cleanup", secret: "..."} - Run cleanup',
+                            'POST {action: "fix-issue", secret: "..."} - Fix all issues',
                             'POST {action: "status"} - Service status'
                         ],
                         timestamp: new Date().toISOString()
@@ -1014,7 +1241,7 @@ module.exports = async (req, res) => {
                 
                 return res.status(200).json({
                     message: 'Weather cron service is running',
-                    duplicateProtection: 'Enabled (token/user deduplication, NO cooldown)',
+                    features: 'Automatic cleanup enabled',
                     timestamp: new Date().toISOString()
                 });
         }

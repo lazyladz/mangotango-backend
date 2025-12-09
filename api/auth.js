@@ -355,6 +355,60 @@ async function handleLogin(requestData, res) {
 
     console.log('AUTH_API: Login successful for user:', userName);
 
+    // ==================== CRITICAL: SAVE FCM TOKEN AND UPDATE TIMESTAMP ====================
+    const currentTime = Date.now();
+    
+    // 1. Update user's last login timestamp (for weather cron cleanup)
+    await db.ref(`users/${loggedInUserId}`).update({
+      lastLogin: currentTime,
+      updatedAt: currentTime
+    });
+    
+    console.log('AUTH_API: Updated user timestamp to:', new Date(currentTime).toISOString());
+    
+    // 2. Save FCM token and device info if provided
+    if (requestData.fcmToken) {
+      const deviceId = requestData.deviceId || 'default_device';
+      
+      console.log('AUTH_API: Saving FCM token for device:', {
+        deviceId: deviceId.substring(0, 10) + '...',
+        tokenPreview: requestData.fcmToken.substring(0, 20) + '...',
+        deviceModel: requestData.deviceModel || 'Unknown'
+      });
+      
+      // Save in new device-based format
+      const deviceTokenData = {
+        fcmToken: requestData.fcmToken,
+        deviceId: deviceId,
+        deviceModel: requestData.deviceModel || 'Unknown',
+        deviceBrand: requestData.deviceBrand || 'Unknown',
+        androidVersion: requestData.androidVersion || 'Unknown',
+        loggedInAt: currentTime,
+        updatedAt: currentTime,
+        isActive: true
+      };
+      
+      await db.ref(`user_tokens/${loggedInUserId}/devices/${deviceId}`)
+        .set(deviceTokenData);
+      
+      console.log('AUTH_API: Device token saved successfully');
+      
+      // 3. Also save main token for backward compatibility
+      const mainTokenData = {
+        fcmToken: requestData.fcmToken,
+        updatedAt: currentTime,
+        latestDeviceId: deviceId,
+        deviceCount: 1
+      };
+      
+      await db.ref(`user_tokens/${loggedInUserId}`)
+        .update(mainTokenData);
+      
+      console.log('AUTH_API: Main token saved for backward compatibility');
+    } else {
+      console.log('AUTH_API: No FCM token provided in login request');
+    }
+
     // Step 5: Return success response with user data
     return res.status(200).json({
       success: true,
@@ -396,7 +450,12 @@ async function handleRegister(requestData, res) {
       password, 
       confirmPassword, 
       age, 
-      phone 
+      phone,
+      fcmToken,
+      deviceId,
+      deviceModel,
+      deviceBrand,
+      androidVersion
     } = requestData;
 
     console.log('AUTH_API: Registration attempt for email:', email);
@@ -449,6 +508,7 @@ async function handleRegister(requestData, res) {
     });
 
     const userId = userRecord.uid;
+    const currentTime = Date.now();
 
     // Save user data in Realtime Database
     const userData = {
@@ -460,11 +520,46 @@ async function handleRegister(requestData, res) {
       phonenumber: phone || '',
       profileImage: '',
       preferredCity: '', // Add this field
-      createdAt: Date.now(),
-      updatedAt: Date.now()
+      createdAt: currentTime,
+      updatedAt: currentTime,
+      lastLogin: currentTime
     };
 
     await db.ref(`users/${userId}`).set(userData);
+
+    // Save FCM token if provided during registration
+    if (fcmToken) {
+      const deviceIdToUse = deviceId || 'default_device';
+      
+      console.log('AUTH_API: Saving FCM token for new user:', {
+        deviceId: deviceIdToUse.substring(0, 10) + '...',
+        tokenPreview: fcmToken.substring(0, 20) + '...'
+      });
+      
+      // Save in device format
+      const deviceTokenData = {
+        fcmToken: fcmToken,
+        deviceId: deviceIdToUse,
+        deviceModel: deviceModel || 'Unknown',
+        deviceBrand: deviceBrand || 'Unknown',
+        androidVersion: androidVersion || 'Unknown',
+        loggedInAt: currentTime,
+        updatedAt: currentTime,
+        isActive: true
+      };
+      
+      await db.ref(`user_tokens/${userId}/devices/${deviceIdToUse}`)
+        .set(deviceTokenData);
+      
+      // Save main token for backward compatibility
+      await db.ref(`user_tokens/${userId}`)
+        .update({
+          fcmToken: fcmToken,
+          updatedAt: currentTime,
+          latestDeviceId: deviceIdToUse,
+          deviceCount: 1
+        });
+    }
 
     console.log('AUTH_API: Registration successful for user:', name);
 

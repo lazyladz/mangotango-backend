@@ -229,11 +229,25 @@ function getFarmingAdvice(temp, condition, humidity, windSpeed) {
 }
 
 function createNotificationSummary(temp, condition, pests, advice) {
-    let summary = `${temp}°C | ${condition}`;
+    // Get weather emoji
+    const getWeatherEmoji = (cond) => {
+        const emojiMap = {
+            'Clear': '☀️', 'Sunny': '☀️',
+            'Rain': '🌧️', 'Rainy': '🌧️', 'Drizzle': '🌧️',
+            'Clouds': '☁️', 'Cloudy': '☁️',
+            'Thunderstorm': '⛈️', 'Stormy': '⛈️',
+            'Snow': '❄️', 'Fog': '🌫️', 'Mist': '🌫️'
+        };
+        return emojiMap[cond] || '🌤️';
+    };
+    
+    let summary = `${getWeatherEmoji(condition)} ${temp}°C | ${condition}`;
     
     if (pests.length > 0) {
-        const pestsToShow = pests.slice(0, 3); 
-        summary += ` | ⚠️ ${pestsToShow.join(', ')}`;
+        const pestsToShow = pests.slice(0, 3);
+        const pestEmoji = pests.length > 2 ? '🐛⚠️' : '🐛';
+        summary += ` | ${pestEmoji} ${pestsToShow.join(', ')}`;
+        
         if (pests.length > 3) {
             summary += ` & ${pests.length - 3} more`;
         }
@@ -241,11 +255,15 @@ function createNotificationSummary(temp, condition, pests, advice) {
         summary += ` | ✅ No pests`;
     }
     
-    const firstAdvice = advice.split('.')[0];
-    if (firstAdvice !== 'Normal farming activities') {
-        summary += ` | ${firstAdvice}`;
+    // Add brief advice if space allows
+    if (summary.length < 70) {
+        const firstAdvice = advice.split('.')[0];
+        if (firstAdvice !== 'Normal farming activities') {
+            summary += ` | 💡 ${firstAdvice.substring(0, 30)}`;
+        }
     }
     
+    // Ensure it fits notification limits
     if (summary.length > 100) {
         summary = summary.substring(0, 97) + '...';
     }

@@ -1,7 +1,7 @@
 const admin = require('firebase-admin');
 const axios = require('axios');
 
-// Initialize Firebase
+
 try {
     if (!admin.apps.length) {
         console.log('🔥 Initializing Firebase Admin...');
@@ -20,6 +20,47 @@ try {
 }
 
 const db = admin.database();
+
+// ==================== NEW: CLEANUP INACTIVE DEVICES ====================
+async function cleanupInactiveDevices() {
+    console.log('\n🧹 CLEANING UP INACTIVE DEVICES...');
+    
+    const tokensRef = db.ref('user_tokens');
+    const snapshot = await tokensRef.once('value');
+    const tokens = snapshot.val();
+    
+    if (!tokens) {
+        console.log('   ✅ No tokens found');
+        return { cleaned: 0 };
+    }
+    
+    let cleanedCount = 0;
+    
+    for (const [userId, tokenData] of Object.entries(tokens)) {
+        if (tokenData?.devices) {
+            for (const [deviceId, deviceData] of Object.entries(tokenData.devices)) {
+                // Remove devices marked as inactive for more than 7 days
+                if (deviceData.isActive === false && deviceData.loggedOutAt) {
+                    const daysSinceLogout = (Date.now() - deviceData.loggedOutAt) / (1000 * 60 * 60 * 24);
+                    
+                    if (daysSinceLogout > 7) {
+                        console.log(`   🗑️ Removing inactive device ${deviceId.substring(0, 8)}... from user ${userId.substring(0, 8)}... (logged out ${Math.round(daysSinceLogout)} days ago)`);
+                        await db.ref(`user_tokens/${userId}/devices/${deviceId}`).remove();
+                        cleanedCount++;
+                    }
+                }
+            }
+        }
+    }
+    
+    if (cleanedCount === 0) {
+        console.log('   ✅ No inactive devices to clean (or all are recent)');
+    } else {
+        console.log(`   📊 Cleaned ${cleanedCount} inactive devices`);
+    }
+    
+    return { cleaned: cleanedCount };
+}
 
 // ==================== CLEANUP FUNCTIONS ====================
 async function cleanDuplicateTokens() {
@@ -325,30 +366,39 @@ async function debugDuplicateUsers() {
     return users;
 }
 
+// ==================== UPDATED: shouldSendWeatherToUser ====================
 async function shouldSendWeatherToUser(userId) {
     try {
         console.log(`🔍 Checking user: ${userId.substring(0, 8)}...`);
         
-        // 1. Check if user has FCM token in database
-        const tokenRef = db.ref(`user_tokens/${userId}`);
-        const tokenSnapshot = await tokenRef.once('value');
-        const tokenData = tokenSnapshot.val();
-        
-        if (!tokenData || !tokenData.fcmToken) {
-            console.log(`   ❌ No FCM token (user logged out or never saved)`);
-            return false;
-        }
-        
-        // 2. Check if user exists and has city
+        // 1. Get user data FIRST (check login/logout status)
         const userRef = db.ref(`users/${userId}`);
         const userSnapshot = await userRef.once('value');
         const userData = userSnapshot.val();
         
         if (!userData) {
-            console.log(`   ❌ User not found`);
+            console.log(`   ❌ User not found in database`);
             return false;
         }
         
+        // ✅ CRITICAL CHECK 1: Check if user is marked as inactive
+        if (userData.isActive === false) {
+            console.log(`   ⏸️ User marked as inactive (isActive: false)`);
+            return false;
+        }
+        
+        // ✅ CRITICAL CHECK 2: Check last logout vs last login
+        const lastLogin = userData.lastLogin || 0;
+        const lastLogout = userData.lastLogout || 0;
+        
+        if (lastLogout > lastLogin) {
+            console.log(`   ⏸️ User logged out recently`);
+            console.log(`      Last login: ${new Date(lastLogin).toISOString()}`);
+            console.log(`      Last logout: ${new Date(lastLogout).toISOString()}`);
+            return false;
+        }
+        
+        // ✅ CRITICAL CHECK 3: Check if user has a valid city
         const userCity = userData.preferredCity;
         
         if (!userCity || userCity === "undefined" || userCity === "null" || userCity.trim() === "") {
@@ -356,11 +406,57 @@ async function shouldSendWeatherToUser(userId) {
             return false;
         }
         
+        // 2. Check if user has ACTIVE devices with tokens
+        const devicesRef = db.ref(`user_tokens/${userId}/devices`);
+        const devicesSnapshot = await devicesRef.once('value');
+        const devices = devicesSnapshot.val();
+        
+        if (!devices) {
+            // Check old token format as fallback
+            const tokenRef = db.ref(`user_tokens/${userId}`);
+            const tokenSnapshot = await tokenRef.once('value');
+            const tokenData = tokenSnapshot.val();
+            
+            if (tokenData?.fcmToken && !tokenData.devices) {
+                console.log(`   🔄 Found old format token, will migrate`);
+                // Will be migrated in sendWeatherNotificationToUser
+            } else {
+                console.log(`   ❌ No devices or tokens found for user`);
+                return false;
+            }
+        } else {
+            // Find ACTIVE devices (isActive !== false and has FCM token)
+            const activeDevices = Object.entries(devices).filter(([deviceId, deviceData]) => {
+                // Device must have FCM token
+                if (!deviceData?.fcmToken) return false;
+                
+                // Device must be marked as active (isActive !== false)
+                if (deviceData.isActive === false) return false;
+                
+                // Check if device logged in recently (within 48 hours)
+                const lastLoginTime = deviceData.loggedInAt || deviceData.updatedAt || 0;
+                const hoursSinceLogin = (Date.now() - lastLoginTime) / (1000 * 60 * 60);
+                
+                return hoursSinceLogin <= 48;
+            });
+            
+            if (activeDevices.length === 0) {
+                console.log(`   ❌ No active devices found`);
+                return false;
+            }
+            
+            console.log(`   📱 Found ${activeDevices.length} active device(s)`);
+        }
+        
         console.log(`   ✅ User ${userId.substring(0, 8)}... gets weather for ${userCity}`);
+        console.log(`   🔐 Last login: ${lastLogin ? new Date(lastLogin).toISOString() : 'never'}`);
+        console.log(`   🚪 Last logout: ${lastLogout ? new Date(lastLogout).toISOString() : 'never'}`);
+        console.log(`   🏙️ City: ${userCity}`);
+        
         return true;
         
     } catch (error) {
-        console.error(`   ❌ Error:`, error.message);
+        console.error(`   ❌ Error checking user ${userId.substring(0, 8)}...:`, error.message);
         return false;
     }
 }
@@ -478,6 +574,7 @@ async function fetchWeatherForCity(city) {
     }
 }
 
+// ==================== UPDATED: sendWeatherNotificationToUser ====================
 async function sendWeatherNotificationToUser(userId, city, weatherData, isTest = false) {
     try {
         console.log(`   📤 Sending to user: ${userId.substring(0, 8)}... for ${city}`);
@@ -494,7 +591,13 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
             
             Object.entries(devices).forEach(([deviceId, deviceData]) => {
                 if (deviceData?.fcmToken) {
-                    // Check if device is active (logged in within last 48 hours)
+                    // ✅ CRITICAL: Check if device is ACTIVE
+                    if (deviceData.isActive === false) {
+                        console.log(`   ⏸️ Device ${deviceId.substring(0, 8)}... is marked as inactive, skipping`);
+                        return;
+                    }
+                    
+                    // Check if device logged in recently (within 48 hours)
                     const lastLoginTime = deviceData.loggedInAt || deviceData.updatedAt || 0;
                     const hoursSinceLogin = (Date.now() - lastLoginTime) / (1000 * 60 * 60);
                     
@@ -578,7 +681,7 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
                     android: {
                         priority: 'high',
                         notification: {
-                            channel_id: 'weather_alerts', // IMPORTANT: Match your app's channel
+                            channel_id: 'weather_alerts',
                             sound: 'default',
                             color: '#FF9800'
                         }
@@ -734,6 +837,7 @@ async function handleCronJob() {
         const cleanupResult = await cleanDuplicateTokens();
         await cleanEmptyTokenEntries();
         await cleanInvalidCityUsers();
+        await cleanupInactiveDevices(); // ✅ NEW: Clean inactive devices
         
         // Debug token storage after cleanup
         await debugTokenStorage();
@@ -999,7 +1103,65 @@ async function handleQuickTest(city = 'Manila') {
     };
 }
 
-// ==================== CLEANUP ENDPOINT ====================
+// ==================== NEW: CHECK USER STATUS ====================
+async function checkUserStatus(userId) {
+    try {
+        console.log(`🔍 Checking status for user: ${userId.substring(0, 8)}...`);
+        
+        // Get user data
+        const userRef = db.ref(`users/${userId}`);
+        const userSnapshot = await userRef.once('value');
+        const userData = userSnapshot.val();
+        
+        // Get device data
+        const devicesRef = db.ref(`user_tokens/${userId}/devices`);
+        const devicesSnapshot = await devicesRef.once('value');
+        const devices = devicesSnapshot.val();
+        
+        // Get old token format
+        const tokenRef = db.ref(`user_tokens/${userId}`);
+        const tokenSnapshot = await tokenRef.once('value');
+        const tokenData = tokenSnapshot.val();
+        
+        // Check if should receive weather
+        const shouldReceive = await shouldSendWeatherToUser(userId);
+        
+        return {
+            userId: userId.substring(0, 8) + '...',
+            userExists: !!userData,
+            userData: userData ? {
+                preferredCity: userData.preferredCity,
+                lastLogin: userData.lastLogin ? new Date(userData.lastLogin).toISOString() : null,
+                lastLogout: userData.lastLogout ? new Date(userData.lastLogout).toISOString() : null,
+                isActive: userData.isActive,
+                hasCity: !!(userData.preferredCity && userData.preferredCity !== 'undefined' && userData.preferredCity !== 'null')
+            } : null,
+            devices: devices ? Object.keys(devices).length : 0,
+            deviceDetails: devices ? Object.entries(devices).map(([deviceId, device]) => ({
+                deviceId: deviceId.substring(0, 8) + '...',
+                isActive: device.isActive,
+                loggedInAt: device.loggedInAt ? new Date(device.loggedInAt).toISOString() : null,
+                loggedOutAt: device.loggedOutAt ? new Date(device.loggedOutAt).toISOString() : null,
+                hasToken: !!device.fcmToken
+            })) : [],
+            oldTokenFormat: tokenData?.fcmToken ? {
+                hasToken: true,
+                tokenPreview: tokenData.fcmToken.substring(0, 20) + '...'
+            } : { hasToken: false },
+            shouldReceiveWeather: shouldReceive,
+            issues: []
+        };
+        
+    } catch (error) {
+        console.error('❌ Error checking user status:', error);
+        return {
+            error: error.message,
+            userId: userId.substring(0, 8) + '...'
+        };
+    }
+}
+
+// ==================== UPDATED: RUN FULL CLEANUP ====================
 async function runFullCleanup() {
     console.log('\n🧹 RUNNING FULL CLEANUP...');
     
@@ -1033,8 +1195,16 @@ async function runFullCleanup() {
             result: cityResult
         });
         
-        // Step 4: Debug current state
-        console.log('\n4️⃣ Debugging current state...');
+        // Step 4: Clean inactive devices
+        console.log('\n4️⃣ Cleaning inactive devices...');
+        const inactiveResult = await cleanupInactiveDevices();
+        results.steps.push({
+            name: 'Inactive Devices',
+            result: inactiveResult
+        });
+        
+        // Step 5: Debug current state
+        console.log('\n5️⃣ Debugging current state...');
         await debugTokenStorage();
         await debugUserTokens();
         await debugDuplicateUsers();
@@ -1171,6 +1341,13 @@ module.exports = async (req, res) => {
                     message: 'Fix applied successfully'
                 });
                 
+            case 'check-user-status':
+                if (!userId) {
+                    return res.status(400).json({ error: 'userId required' });
+                }
+                const statusResult = await checkUserStatus(userId);
+                return res.status(200).json(statusResult);
+                
             case 'status':
                 // Check database for user cities
                 const usersRef = db.ref('users');
@@ -1198,7 +1375,8 @@ module.exports = async (req, res) => {
                         'Automatic cleanup',
                         'Weather caching',
                         'Job overlap prevention',
-                        'COOLDOWN DISABLED'
+                        'Inactive device cleanup',
+                        'Active user filtering'
                     ],
                     stats: {
                         totalUsers: Object.keys(users).length,
@@ -1223,8 +1401,8 @@ module.exports = async (req, res) => {
                             'Farming advice',
                             'Active user filtering',
                             'Automatic token cleanup',
-                            'NO COOLDOWN - Notifications every run',
-                            'Auto token cleanup'
+                            'Inactive device cleanup',
+                            'User activity tracking'
                         ],
                         endpoints: [
                             'GET / - This info',
@@ -1233,6 +1411,7 @@ module.exports = async (req, res) => {
                             'POST {action: "diagnose"} - Debug duplicates',
                             'POST {action: "cleanup", secret: "..."} - Run cleanup',
                             'POST {action: "fix-issue", secret: "..."} - Fix all issues',
+                            'POST {action: "check-user-status", userId: "..."} - Check user status',
                             'POST {action: "status"} - Service status'
                         ],
                         timestamp: new Date().toISOString()
@@ -1241,7 +1420,7 @@ module.exports = async (req, res) => {
                 
                 return res.status(200).json({
                     message: 'Weather cron service is running',
-                    features: 'Automatic cleanup enabled',
+                    features: 'Automatic cleanup enabled with active user filtering',
                     timestamp: new Date().toISOString()
                 });
         }

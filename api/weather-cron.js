@@ -232,7 +232,11 @@ function createNotificationSummary(temp, condition, pests, advice) {
     let summary = `${temp}°C | ${condition}`;
     
     if (pests.length > 0) {
-        summary += ` | ⚠️ ${pests.length} pest${pests.length > 1 ? 's' : ''}`;
+        const pestsToShow = pests.slice(0, 3); 
+        summary += ` | ⚠️ ${pestsToShow.join(', ')}`;
+        if (pests.length > 3) {
+            summary += ` & ${pests.length - 3} more`;
+        }
     } else {
         summary += ` | ✅ No pests`;
     }
@@ -313,8 +317,10 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
                             token: deviceData.fcmToken,
                             deviceId: deviceId,
                             source: 'device',
-                            lastLogin: lastLoginTime
+                            lastLogin: lastLoginTime,
+                            deviceInfo: `${deviceData.deviceModel || 'Unknown'}`
                         });
+                        console.log(`   📱 Device ${deviceId.substring(0, 8)}...: ${deviceData.fcmToken.substring(0, 20)}...`);
                     } else {
                         console.log(`   ⏸️ Device ${deviceId.substring(0, 8)}... inactive (${Math.round(hoursSinceLogin)}h ago)`);
                     }
@@ -330,11 +336,13 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
             
             if (tokenData?.fcmToken && !tokenData.devices) {
                 console.log(`   🔄 Using old token format`);
+                console.log(`   🔑 Token: ${tokenData.fcmToken.substring(0, 30)}...`);
                 tokensToSend.push({
                     token: tokenData.fcmToken,
                     deviceId: 'legacy_device',
                     source: 'legacy',
-                    lastLogin: tokenData.updatedAt || Date.now()
+                    lastLogin: tokenData.updatedAt || Date.now(),
+                    deviceInfo: 'Legacy Device'
                 });
                 
                 // Migrate to new format
@@ -354,6 +362,7 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
         const notificationBody = createNotificationSummary(temp, condition, pests, advice);
         
         let sentCount = 0;
+        let detailedResults = [];
         
         // Send to each token
         for (const tokenInfo of tokensToSend) {
@@ -381,21 +390,54 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
                         cronJobId: 'github-actions'
                     },
                     android: {
-                        priority: 'high'
+                        priority: 'high',
+                        notification: {
+                            channel_id: 'weather_alerts', // IMPORTANT: Match your app's channel
+                            sound: 'default',
+                            color: '#FF9800'
+                        }
+                    },
+                    apns: {
+                        payload: {
+                            aps: {
+                                sound: 'default',
+                                badge: 1
+                            }
+                        }
                     }
                 };
                 
                 console.log(`   📱 Sending to ${tokenInfo.source} device ${tokenInfo.deviceId.substring(0, 8)}...`);
+                console.log(`   🔑 Token preview: ${tokenInfo.token.substring(0, 30)}...`);
                 
                 const response = await admin.messaging().send(messagePayload);
                 sentCount++;
-                console.log(`   ✅ Sent successfully`);
+                console.log(`   ✅ Sent successfully - Message ID: ${response}`);
+                
+                detailedResults.push({
+                    deviceId: tokenInfo.deviceId,
+                    status: 'success',
+                    messageId: response,
+                    tokenPreview: tokenInfo.token.substring(0, 20) + '...'
+                });
                 
             } catch (sendError) {
                 console.error(`   ❌ Error sending:`, sendError.message);
+                console.error(`   🔧 Error code:`, sendError.code);
+                console.error(`   🔑 Token: ${tokenInfo.token.substring(0, 30)}...`);
+                
+                detailedResults.push({
+                    deviceId: tokenInfo.deviceId,
+                    status: 'failed',
+                    error: sendError.message,
+                    errorCode: sendError.code,
+                    tokenPreview: tokenInfo.token.substring(0, 20) + '...'
+                });
                 
                 // Remove invalid token
-                if (sendError.code === 'messaging/registration-token-not-registered') {
+                if (sendError.code === 'messaging/registration-token-not-registered' ||
+                    sendError.code === 'messaging/invalid-registration-token' ||
+                    sendError.code === 'messaging/invalid-argument') {
                     console.log(`   🗑️ Removing invalid token`);
                     
                     if (tokenInfo.source === 'device') {
@@ -411,11 +453,21 @@ async function sendWeatherNotificationToUser(userId, city, weatherData, isTest =
         }
         
         console.log(`   📊 Sent to ${sentCount} out of ${tokensToSend.length} token(s)`);
-        return sentCount > 0;
+        console.log(`   📋 Detailed results:`, JSON.stringify(detailedResults, null, 2));
+        
+        return {
+            success: sentCount > 0,
+            sentCount: sentCount,
+            totalTokens: tokensToSend.length,
+            detailedResults: detailedResults
+        };
         
     } catch (error) {
         console.error(`   ❌ Error:`, error.message);
-        return false;
+        return {
+            success: false,
+            error: error.message
+        };
     }
 }
 

@@ -19,7 +19,51 @@ try {
     console.error('❌ Firebase init error:', error.message);
 }
 
+
 const db = admin.database();
+
+// weather-cron.js - Add this function
+async function fixUndefinedCities() {
+    console.log('\n🛠️ FIXING UNDEFINED CITIES...');
+    
+    const usersRef = db.ref('users');
+    const snapshot = await usersRef.once('value');
+    const users = snapshot.val();
+    
+    if (!users) {
+        console.log('   ✅ No users found');
+        return { fixed: 0 };
+    }
+    
+    let fixedCount = 0;
+    const updates = {};
+    
+    for (const [userId, userData] of Object.entries(users)) {
+        if (userData) {
+            const currentCity = userData.preferredCity;
+            const shouldFix = !currentCity || 
+                            currentCity === "undefined" || 
+                            currentCity === "null" ||
+                            currentCity.trim() === "";
+            
+            if (shouldFix) {
+                console.log(`   🛠️ Fixing user ${userId.substring(0, 8)}...: "${currentCity || 'empty'}" → "Manila"`);
+                updates[`${userId}/preferredCity`] = "Manila";
+                updates[`${userId}/updatedAt`] = Date.now();
+                fixedCount++;
+            }
+        }
+    }
+    
+    if (Object.keys(updates).length > 0) {
+        await usersRef.update(updates);
+        console.log(`\n✅ FIXED ${fixedCount} USERS WITH UNDEFINED CITIES`);
+    } else {
+        console.log('   ✅ No users with undefined cities found');
+    }
+    
+    return { fixed: fixedCount };
+}
 
 // ==================== NEW: CLEANUP INACTIVE DEVICES ====================
 async function cleanupInactiveDevices() {
